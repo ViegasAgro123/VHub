@@ -441,16 +441,15 @@ end
 MODULES["core/state"] = function()
 local __src = [=[
 --[[
-    AOTR · Barramento de Estado
+    VHub · Barramento de Estado
     Arquivo: src/core/state.lua
 
     Cada feature declara seu estado aqui. A UI lê e escreve só neste objeto;
     nenhuma feature conhece a UI, nenhuma UI conhece a implementação de uma
-    feature. É o que permite ligar/desligar tudo sem dependência circular.
+    feature. É o que permite ligar e desligar tudo sem dependência circular.
 
-    `config` é separado de `flags`: flags são booleanos (ligado/desligado),
-    config são parâmetros (distância, velocidade, cor). Salvar e carregar
-    mexe só nesses dois.
+    `flags` são booleanos (ligado/desligado), `config` são parâmetros.
+    Salvar e carregar mexe só nesses dois.
 --]]
 
 
@@ -458,67 +457,94 @@ local __src = [=[
 local __req = ...
 local State = {}
 
--- ── Flags (booleanos) ────────────────────────────────────────────────────────
+-- ── Flags ────────────────────────────────────────────────────────────────────
 State.flags = {
-    -- Combate
-    killAura      = false,
-    killAuraNape  = true,    -- mirar a nuca (crítico) em vez do corpo
-    autoTP        = false,
+    -- ── Missões · Titãs
+    autoKill        = false,   -- mata Titãs automaticamente
+    killNape        = true,    -- mira a nuca (crítico)
+    autoReload      = false,   -- recarrega lâminas quebradas
+    autoEscape      = false,   -- escapa de agarrões
+    autoTPToTitan   = false,   -- teleporta ao Titã mais próximo
 
-    -- Auxílio de combate
-    napeExpander  = false,
-    autoRefill    = false,
-    infiniteGas   = false,
+    -- ── Missões · Movimento
+    safeSpot        = false,   -- recua quando um Titã chega perto
+    tpObjective     = false,   -- teleporta ao objetivo
 
-    -- Segurança
-    safeFarm      = true,    -- trava anti-shadow-ban: não fecha missão rápido
+    -- ── Missões · Nuca
+    napeExpander    = false,
+    showNape        = false,   -- deixa a nuca visível
 
-    -- Progressão
-    autoRoll      = false,
-    masteryFarm   = false,
-    goldFarm      = false,
-    instantRetry  = false,
+    -- ── Missões · Pós-missão
+    autoRetry       = false,
+    autoReturnLobby = false,
+    openFreeChest   = false,
+    openPremiumChest= false,   -- gasta recurso: nunca liga sozinho
+    rejoinOnTeleport= false,
 
-    -- Visual
-    esp           = false,
-    espBox        = true,
-    espLine       = true,
-    espText       = true,
-    espDistance   = true,
-    espHealth     = true,
-    espNape       = true,
-    espBossOnly   = false,
+    -- ── Lobby · Missões
+    autoStart       = false,
+    preferBoosted   = true,
 
-    -- Sistema
-    antiAfk       = true,
-    watermark     = true,
-    notifications = true,
+    -- ── Lobby · Melhorias
+    autoUpgrade     = false,
+    autoSkills      = false,
+
+    -- ── Segurança
+    safeFarm        = true,    -- trava anti-shadow-ban
+
+    -- ── Visual
+    esp             = false,
+    espBox          = true,
+    espLine         = true,
+    espText         = true,
+    espHealth       = true,
+    espNape         = true,
+    espBossOnly     = false,
+
+    -- ── Sistema
+    antiAfk         = true,
+    watermark       = true,
+    notifications   = true,
 }
 
--- ── Config (parâmetros) ──────────────────────────────────────────────────────
+-- ── Config ───────────────────────────────────────────────────────────────────
 State.config = {
     -- Combate
-    killAuraRange   = 25,     -- studs; o alcance real da lâmina é curto
-    killAuraDelay   = 0.12,
-
-    -- Magnitude declarada em Hitboxes/Register.
-    -- Referência de mercado: scripts populares usam 215-230, o que é
-    -- fisicamente impossível e o candidato nº 1 a gatilho de detecção.
-    -- 12 é o comprimento aproximado da lâmina. Suba por sua conta e risco.
-    hitMagnitude    = 12,
-    hitOffset       = 0,
-
-    -- Auto TP
+    killRange       = 25,
+    strikeDelay     = 0.12,
     tpRange         = 120,
     tpOffset        = 4,
     tpCooldown      = 0.4,
 
-    -- Nape Expander
-    napeScale       = 2.5,
+    -- Magnitude declarada em Hitboxes/Register.
+    -- 12 é o comprimento aproximado da lâmina. Fontes usam 143+ e até 215-230,
+    -- o que é fisicamente impossível e o sinal mais fácil de auditar.
+    hitMagnitude    = 12,
+    hitOffset       = 0,
+
+    -- Nuca (tamanho de fábrica: Vector3.new(15, 9, 11))
+    napeScale       = 1.5,
     napeTransparency= 0.35,
 
+    -- Local seguro
+    safeRange       = 40,
+    safeDistance    = 30,
+
     -- Anti-shadow-ban
-    safeTime        = 32,     -- segundos mínimos por missão (campo testado)
+    safeTime        = 32,
+
+    -- Lobby · missão
+    missionType     = "Missions",
+    mapName         = "Shiganshina",
+    difficulty      = "Normal",
+    objective       = "Skirmish",
+    raid            = "Attack Titan",
+    modifiers       = {},
+
+    -- Lobby · habilidades
+    skillLeft       = "Regen VI",
+    skillMiddle     = "Damage V",
+    skillRight      = "Tank VIII",
 
     -- Visual
     espMaxDist      = 900,
@@ -526,15 +552,15 @@ State.config = {
     espThickness    = 1.4,
 }
 
--- Cor do ESP derivada do nome escolhido na UI.
+-- ── Cores do ESP ─────────────────────────────────────────────────────────────
 State.ESP_COLORS = {
-    ["Vermelho"] = Color3.fromRGB(215, 38, 61),
-    ["Branco"]   = Color3.fromRGB(240, 241, 245),
-    ["Verde"]    = Color3.fromRGB(96, 190, 140),
-    ["Azul"]     = Color3.fromRGB(108, 150, 220),
-    ["Amarelo"]  = Color3.fromRGB(226, 168, 72),
-    ["Rosa"]     = Color3.fromRGB(230, 120, 180),
-    ["Ciano"]    = Color3.fromRGB(90, 200, 210),
+    ["Vermelho"] = Color3.fromRGB(224, 45, 45),
+    ["Branco"]   = Color3.fromRGB(242, 243, 247),
+    ["Verde"]    = Color3.fromRGB(98, 194, 142),
+    ["Azul"]     = Color3.fromRGB(110, 152, 222),
+    ["Amarelo"]  = Color3.fromRGB(230, 172, 76),
+    ["Rosa"]     = Color3.fromRGB(232, 122, 182),
+    ["Ciano"]    = Color3.fromRGB(92, 202, 212),
 }
 
 function State.espColor()
@@ -542,16 +568,12 @@ function State.espColor()
 end
 
 -- ── Observadores ─────────────────────────────────────────────────────────────
--- Features que precisam reagir a uma mudança (ex: ESP ligado -> criar desenhos)
--- se inscrevem aqui, em vez de a UI chamar a feature diretamente.
 
 local watchers = {}
 
 function State.on(flag, fn)
     watchers[flag] = watchers[flag] or {}
     table.insert(watchers[flag], fn)
-    -- dispara imediatamente com o estado atual, para que a feature nasça
-    -- sincronizada mesmo se a flag já estiver ligada
     fn(State.flags[flag])
 end
 
@@ -561,7 +583,7 @@ function State.set(flag, value)
     for _, fn in ipairs(watchers[flag] or {}) do
         local ok, err = pcall(fn, value)
         if not ok then
-            warn(("[AOTR] observador de '%s' falhou: %s"):format(flag, tostring(err)))
+            warn(("[VHub] observador de '%s' falhou: %s"):format(flag, tostring(err)))
         end
     end
 end
@@ -574,20 +596,27 @@ function State.get(flag)
     return State.flags[flag]
 end
 
--- ── Persistência ─────────────────────────────────────────────────────────────
--- Um único arquivo JSON via executor. Envolvido em pcall porque nem todo
--- executor expõe writefile, e o script precisa rodar mesmo sem persistência.
+-- Quantos itens estão ligados, dentro de um grupo de flags. A UI usa para o
+-- contador de cada seção.
+function State.countActive(flags)
+    local n = 0
+    for _, f in ipairs(flags) do
+        if State.flags[f] then n = n + 1 end
+    end
+    return n
+end
 
-local CONFIG_PATH = "aotr_config.json"
+-- ── Persistência ─────────────────────────────────────────────────────────────
+
+local CONFIG_PATH = "vhub_config.json"
 
 function State.save()
-    local ok, err = pcall(function()
+    local ok = pcall(function()
         if not writefile then return end
         local payload = {
             flags = State.flags,
             config = State.config,
         }
-        -- Color3 não serializa; guardamos só o nome (já é string).
         writefile(CONFIG_PATH, game:GetService("HttpService"):JSONEncode(payload))
     end)
     return ok
@@ -602,7 +631,7 @@ function State.load()
 
     for k, v in pairs(data.flags or {}) do
         if State.flags[k] ~= nil and type(v) == "boolean" then
-            State.flags[k] = v   -- direto: não dispara watchers antes da UI existir
+            State.flags[k] = v
         end
     end
     for k, v in pairs(data.config or {}) do
@@ -620,19 +649,249 @@ local __chunk = assert(loadstring(__src), "falha ao compilar core/state")
 return __chunk(__req)
 end
 
+-- ── core/stats ────────────────────────────────────────────────
+MODULES["core/stats"] = function()
+local __src = [=[
+--[[
+    VHub · Estatísticas
+    Arquivo: src/core/stats.lua
+
+    Fornece os números que a Home mostra: jogadores, amigos no servidor, tempo
+    de sessão, FPS e ping.
+
+    MÉTODOS — verificados contra fontes reais, não deduzidos:
+
+      Ping  : Stats.Network.ServerStatsItem["Data Ping"]:GetValue()
+              É a leitura padrão e funciona em executor.
+
+      FPS   : contagem de frames sobre o tempo decorrido, numa janela de 0.5s.
+              Mais fiel que inverter 1/dt, que oscila demais para exibir.
+              Stats.PerformanceStats NÃO é usado — é instável entre executores.
+
+      Sessão: os.time() no carregamento, diferença a cada leitura.
+
+      Jogadores no servidor: #Players:GetPlayers()
+      Jogadores na experiência: requer chamada HTTP à API pública da Roblox.
+              Nem todo executor libera request(), então o valor é opcional —
+              quando indisponível mostramos apenas o do servidor.
+--]]
+
+
+-- injetado pelo bundler: resolvedor de módulos no escopo deste chunk
+local __req = ...
+local Stats = {}
+
+local Players = game:GetService("Players")
+local RunService = game:GetService("RunService")
+local HttpService = game:GetService("HttpService")
+
+local _LP_cache
+local function LP()
+    if _LP_cache and _LP_cache.Parent then return _LP_cache end
+    _LP_cache = Players.LocalPlayer
+    return _LP_cache
+end
+
+-- ── Tempo de sessão ──────────────────────────────────────────────────────────
+
+local SESSION_START = os.time()
+
+function Stats.sessionSeconds()
+    return os.time() - SESSION_START
+end
+
+-- Formata como "2h 14m" ou "14m 03s".
+function Stats.sessionText()
+    local s = Stats.sessionSeconds()
+    local h = math.floor(s / 3600)
+    local m = math.floor((s % 3600) / 60)
+    if h > 0 then return ("%dh %02dm"):format(h, m) end
+    return ("%dm %02ds"):format(m, s % 60)
+end
+
+-- ── FPS ──────────────────────────────────────────────────────────────────────
+-- Conta frames numa janela deslizante. Atualizar a cada 0.5s evita o número
+-- piscando entre 58 e 62 sem parar.
+
+local fps = 60
+local frameCount = 0
+local windowStart = os.clock()
+
+task.spawn(function()
+    local conn
+    conn = RunService.RenderStepped:Connect(function()
+        frameCount = frameCount + 1
+        local elapsed = os.clock() - windowStart
+        if elapsed >= 0.5 then
+            fps = math.floor(frameCount / elapsed + 0.5)
+            frameCount = 0
+            windowStart = os.clock()
+        end
+        -- A conexão fica viva enquanto o script rodar; nada a desconectar.
+    end)
+end)
+
+function Stats.fps()
+    return fps
+end
+
+-- ── Ping ─────────────────────────────────────────────────────────────────────
+
+function Stats.ping()
+    local ok, value = pcall(function()
+        local stats = game:GetService("Stats")
+        local item = stats.Network.ServerStatsItem["Data Ping"]
+        return item:GetValue()
+    end)
+    if ok and type(value) == "number" then
+        return math.floor(value + 0.5)
+    end
+    return nil
+end
+
+-- ── Jogadores ────────────────────────────────────────────────────────────────
+
+-- No servidor atual — sempre disponível, é local.
+function Stats.serverPlayers()
+    return #Players:GetPlayers()
+end
+
+function Stats.maxPlayers()
+    return Players.MaxPlayers
+end
+
+-- ── Amigos no servidor ───────────────────────────────────────────────────────
+-- IsFriendsWith é uma chamada de rede; fazer para 30 jogadores a cada frame
+-- seria absurdo. Cacheamos por 20 segundos.
+
+local friendsCache = { list = {}, at = 0 }
+
+function Stats.friendsHere(force)
+    local now = os.clock()
+    if not force and (now - friendsCache.at) < 20 then
+        return friendsCache.list
+    end
+
+    local found = {}
+    for _, p in ipairs(Players:GetPlayers()) do
+        if p ~= LocalPlayer then
+            -- userId ou Player: a API aceita ambos nas versões atuais.
+            local ok, isFriend = pcall(function()
+                return LP():IsFriendsWith(p.UserId)
+            end)
+            if ok and isFriend then
+                table.insert(found, p)
+            end
+        end
+    end
+
+    friendsCache.list = found
+    friendsCache.at = now
+    return found
+end
+
+-- ── Jogadores na experiência (opcional) ──────────────────────────────────────
+-- Requer HTTP. Nem todo executor libera, então falha em silêncio e a UI
+-- simplesmente não mostra o campo.
+
+local UNIVERSE_ID = 4658598196
+local universeCache = { count = nil, max = nil, at = 0 }
+
+function Stats.universePlayers()
+    local now = os.clock()
+    if (now - universeCache.at) < 60 then
+        return universeCache.count, universeCache.max
+    end
+
+    local req = request or http_request or (syn and syn.request)
+    if not req then return nil, nil end
+
+    universeCache.at = now
+
+    task.spawn(function()
+        local ok, result = pcall(function()
+            local url = ("https://games.roblox.com/v1/games?universeIds=%d"):format(UNIVERSE_ID)
+            local res = req({ Url = url, Method = "GET" })
+            if not res or not res.Body then return nil end
+            local data = HttpService:JSONDecode(res.Body)
+            local entry = data and data.data and data.data[1]
+            if entry then
+                return entry.playing, entry.maxPlayers
+            end
+            return nil
+        end)
+        if ok and result then
+            universeCache.count = result
+        end
+    end)
+
+    return universeCache.count, universeCache.max
+end
+
+-- ── Jogador local ────────────────────────────────────────────────────────────
+
+function Stats.playerInfo()
+    local lp = LocalPlayer
+    if not lp then return nil end
+
+    local ok, thumb = pcall(function()
+        return Players:GetUserThumbnailAsync(
+            lp.UserId,
+            Enum.ThumbnailType.HeadShot,
+            Enum.ThumbnailSize.Size150x150
+        )
+    end)
+
+    return {
+        name = lp.Name,
+        display = lp.DisplayName,
+        userId = lp.UserId,
+        avatar = ok and thumb or nil,
+        accountAge = lp.AccountAge,
+    }
+end
+
+-- ── Instantâneo completo ─────────────────────────────────────────────────────
+-- Uma leitura só, para a Home não chamar cinco funções por frame.
+
+function Stats.snapshot()
+    local friends = Stats.friendsHere()
+    local uniCount = Stats.universePlayers()
+
+    return {
+        serverPlayers = Stats.serverPlayers(),
+        maxPlayers = Stats.maxPlayers(),
+        friends = #friends,
+        friendsList = friends,
+        session = Stats.sessionText(),
+        sessionSec = Stats.sessionSeconds(),
+        fps = Stats.fps(),
+        ping = Stats.ping(),
+        universe = uniCount,
+    }
+end
+
+return Stats
+
+]=]
+local __chunk = assert(loadstring(__src), "falha ao compilar core/stats")
+return __chunk(__req)
+end
+
 -- ── core/theme ────────────────────────────────────────────────
 MODULES["core/theme"] = function()
 local __src = [=[
 --[[
-    AOTR · Núcleo de Tema
+    VHub · Núcleo de Tema
     Arquivo: src/core/theme.lua
 
-    Paleta preta / vermelha / cinza-gradiente, derivada do estudo do AirFlow
-    (fundo #060608, accent dessaturado, cantos suaves, glow sutil) mas invertida
-    para o eixo vermelho e com profundidade real em vez de cor chapada.
+    Identidade: preto e vermelho, com o vermelho em GRADIENTE.
+    O logo do VHub (preto, branco e vermelho) define a paleta — a interface
+    inteira é construída para parecer parte da mesma peça.
 
-    Cada token é calculado a partir de três âncoras — tinta, sangue, cinza —
-    para que mudar a identidade inteira seja editar 3 constantes, não 40.
+    Como funciona a escala de elevação: cada superfície é uma mistura do preto
+    com o cinza, em passos pequenos e regulares. É o degrau entre um painel e
+    outro que cria profundidade, não a cor em si. Sem isso a janela achata.
 --]]
 
 
@@ -641,18 +900,15 @@ local __req = ...
 local Theme = {}
 
 -- ── Âncoras ──────────────────────────────────────────────────────────────────
--- Tinta   : o preto de fundo. Não é #000 — preto puro achata a percepção de
---           camada. 0x07/0x08 dá espaço para sombra abaixo e realce acima.
--- Sangue  : o vermelho de assinatura. 0xD7263D é quente e legível sobre tinta;
---           vermelhos mais escuros (0x8B0000) somem em telas de contraste baixo.
--- Cinza   : o neutro de texto e borda, levemente azulado para não brigar com o
---           vermelho.
-local TINTA  = Color3.fromRGB(7, 8, 10)
-local SANGUE = Color3.fromRGB(215, 38, 61)
-local CINZA  = Color3.fromRGB(150, 154, 165)
+-- Tinta  : preto de trabalho. Não é #000 — preto absoluto não deixa espaço
+--          para sombra abaixo e a interface perde relevo.
+-- Brasa  : o vermelho da marca. 0xE0202 0 é o tom exato amostrado do logo.
+--          D7263D é mais quente; E02D2D é o que aparece na arte.
+-- Cinza  : neutro levemente quente, para não brigar com o vermelho.
+local TINTA = Color3.fromRGB(8, 8, 10)
+local BRASA = Color3.fromRGB(224, 45, 45)
+local CINZA = Color3.fromRGB(148, 150, 158)
 
--- Mistura linear em espaço RGB. Suficiente aqui: as paradas são próximas o
--- bastante para que a diferença com espaço linear seja imperceptível.
 local function mix(a, b, t)
     return Color3.new(
         a.R + (b.R - a.R) * t,
@@ -662,153 +918,158 @@ local function mix(a, b, t)
 end
 
 local function lighten(c, t) return mix(c, Color3.new(1, 1, 1), t) end
-local function darken(c, t)  return mix(c, Color3.new(0, 0, 0), t) end
+local function darken(c, t) return mix(c, Color3.new(0, 0, 0), t) end
 
 -- ── Superfícies ──────────────────────────────────────────────────────────────
--- Escala de elevação: quanto mais perto da luz, mais claro. É isso que cria a
--- sensação de profundidade — um painel sobre outro precisa de um degrau visível.
 Theme.color = {
-    -- fundo
-    void        = TINTA,                        -- atrás de tudo
-    base        = mix(TINTA, CINZA, 0.045),     -- corpo da janela
-    surface     = mix(TINTA, CINZA, 0.075),     -- cartão
-    surfaceHi   = mix(TINTA, CINZA, 0.105),     -- cartão sob o mouse
-    surfaceTop  = mix(TINTA, CINZA, 0.130),     -- cabeçalho fixo
+    void       = TINTA,
+    base       = mix(TINTA, CINZA, 0.055),
+    surface    = mix(TINTA, CINZA, 0.085),
+    surfaceHi  = mix(TINTA, CINZA, 0.120),
+    surfaceTop = mix(TINTA, CINZA, 0.150),
+    card       = mix(TINTA, CINZA, 0.100),
 
-    -- traço
-    line        = mix(TINTA, CINZA, 0.155),     -- divisória de 1px
-    lineSoft    = mix(TINTA, CINZA, 0.095),     -- divisória interna
-    lineHot     = mix(SANGUE, TINTA, 0.45),     -- borda acesa
+    line       = mix(TINTA, CINZA, 0.170),
+    lineSoft   = mix(TINTA, CINZA, 0.105),
+    lineHot    = mix(BRASA, TINTA, 0.40),
 
-    -- texto
-    text        = Color3.fromRGB(240, 241, 245),
-    textDim     = mix(CINZA, TINTA, 0.20),
-    textMute    = mix(CINZA, TINTA, 0.48),
+    text       = Color3.fromRGB(242, 243, 247),
+    textDim    = mix(CINZA, TINTA, 0.18),
+    textMute   = mix(CINZA, TINTA, 0.50),
 
-    -- assinatura
-    accent      = SANGUE,
-    accentHi    = lighten(SANGUE, 0.28),
-    accentLo    = darken(SANGUE, 0.34),
-    accentGhost = mix(SANGUE, TINTA, 0.86),     -- preenchimento de 14%
+    accent     = BRASA,
+    accentHi   = lighten(BRASA, 0.30),
+    accentLo   = darken(BRASA, 0.36),
+    accentDeep = darken(BRASA, 0.62),
+    accentGhost= mix(BRASA, TINTA, 0.88),
 
-    -- estados (dessaturados para não competir com o accent)
-    on          = Color3.fromRGB(198, 62, 78),
-    off         = mix(TINTA, CINZA, 0.20),
-    warn        = Color3.fromRGB(226, 168, 72),
-    danger      = Color3.fromRGB(232, 58, 58),
-    ok          = Color3.fromRGB(96, 190, 140),
-    info        = Color3.fromRGB(108, 150, 220),
+    on         = Color3.fromRGB(200, 68, 80),
+    off        = mix(TINTA, CINZA, 0.22),
+    warn       = Color3.fromRGB(230, 172, 76),
+    danger     = Color3.fromRGB(238, 62, 62),
+    ok         = Color3.fromRGB(98, 194, 142),
+    info       = Color3.fromRGB(110, 152, 222),
 }
 
 -- ── Gradiente ────────────────────────────────────────────────────────────────
--- Roblox não tem gradiente nativo em Instance sem UIGradient. Em vez de criar
--- 200 UIGradients (custo de instância), pré-computo as paradas e as reuso.
--- O cinza-gradiente pedido vive aqui: cinza quente no topo, cinza frio embaixo.
---
--- LIMITE IMPORTANTE: ColorSequence e NumberSequence aceitam NO MÁXIMO 20
--- keypoints. Com 21 ou mais, o construtor levanta "table is too long" e derruba
--- o script inteiro antes da UI montar — a janela aparece branca e nada funciona.
--- 24 paradas foi exatamente esse erro na primeira versão em produção.
+-- LIMITE: ColorSequence e NumberSequence aceitam NO MÁXIMO 20 keypoints.
+-- Com 21 o construtor levanta "table is too long" e derruba o script antes da
+-- UI montar — janela branca e nada funciona. Já aconteceu uma vez.
 Theme.SEQUENCE_LIMIT = 20
-Theme.gradient = {}
-do
-    local STOPS = Theme.SEQUENCE_LIMIT
-    local topo = mix(CINZA, Color3.new(1, 1, 1), 0.10)
-    local meio = mix(TINTA, CINZA, 0.10)
-    local fundo = darken(TINTA, 0.25)
-    for i = 0, STOPS - 1 do
-        local t = i / (STOPS - 1)
-        local c
-        if t < 0.5 then
-            c = mix(topo, meio, t / 0.5)
-        else
-            c = mix(meio, fundo, (t - 0.5) / 0.5)
-        end
-        Theme.gradient[i] = c
+
+-- Aplica um gradiente de cor a um Frame.
+--   stops  : tabela de {posicao, Color3}
+--   rotacao: 90 = topo->base, 0 = esquerda->direita
+function Theme.gradient(frame, stops, rotacao)
+    local g = Instance.new("UIGradient")
+    g.Rotation = rotacao or 90
+
+    local seq = {}
+    local n = math.min(#stops, Theme.SEQUENCE_LIMIT)
+    for i = 1, n do
+        local s = stops[i]
+        table.insert(seq, ColorSequenceKeypoint.new(s[1], s[2]))
     end
-    Theme.gradient.stops = STOPS
+    g.Color = ColorSequence.new(seq)
+    g.Parent = frame
+    return g
+end
 
-    -- Aplica um gradiente vertical a um Frame via UIGradient.
-    -- O clamp em SEQUENCE_LIMIT é defensivo: se as paradas forem aumentadas no
-    -- futuro, o gradiente degrada para menos pontos em vez de derrubar o script.
-    function Theme.applyGradient(frame, flip, alphaTop, alphaBot)
-        local g = Instance.new("UIGradient")
-        g.Rotation = flip and 180 or 90   -- 90 = topo->base
+-- Gradiente de transparência, útil para fade de bordas.
+function Theme.fade(frame, rotacao, alphaInicio, alphaFim)
+    local g = Instance.new("UIGradient")
+    g.Rotation = rotacao or 90
+    g.Transparency = NumberSequence.new({
+        NumberSequenceKeypoint.new(0, alphaInicio or 0),
+        NumberSequenceKeypoint.new(1, alphaFim or 1),
+    })
+    g.Parent = frame
+    return g
+end
 
-        local n = math.min(Theme.gradient.stops, Theme.SEQUENCE_LIMIT)
+-- Os dois gradientes da identidade, prontos.
 
-        local seq = {}
-        for i = 0, n - 1 do
-            local t = i / (n - 1)
-            table.insert(seq, ColorSequenceKeypoint.new(t, Theme.gradient[i]))
-        end
-        g.Color = ColorSequence.new(seq)
+-- Escuro, para corpos de painel. Quase imperceptível — é textura, não enfeite.
+function Theme.gradientBase(frame)
+    return Theme.gradient(frame, {
+        { 0.0, mix(TINTA, CINZA, 0.085) },
+        { 0.5, mix(TINTA, CINZA, 0.055) },
+        { 1.0, darken(TINTA, 0.30) },
+    })
+end
 
-        if alphaTop or alphaBot then
-            local at = alphaTop or 0
-            local ab = alphaBot or 0
-            local aseq = {}
-            for i = 0, n - 1 do
-                local t = i / (n - 1)
-                table.insert(aseq, NumberSequenceKeypoint.new(t, at + (ab - at) * t))
-            end
-            g.Transparency = NumberSequence.new(aseq)
-        end
+-- Vermelho, para a marca e os elementos de destaque.
+function Theme.gradientBrand(frame)
+    return Theme.gradient(frame, {
+        { 0.0, lighten(BRASA, 0.14) },
+        { 0.5, BRASA },
+        { 1.0, darken(BRASA, 0.30) },
+    })
+end
 
-        g.Parent = frame
-        return g
-    end
+-- Brilho vermelho que some para o escuro: usado atrás do logo e no cabeçalho.
+function Theme.gradientGlow(frame)
+    return Theme.gradient(frame, {
+        { 0.0, mix(BRASA, TINTA, 0.55) },
+        { 0.6, mix(BRASA, TINTA, 0.88) },
+        { 1.0, TINTA },
+    })
 end
 
 -- ── Tipografia ───────────────────────────────────────────────────────────────
--- Uma família só, escalada por papel. Duas famílias em UI de cheat lê como
--- descuido; o peso e o tamanho já carregam a hierarquia.
+-- Tamanhos levemente maiores que a primeira versão: a janela cresceu, e texto
+-- apertado em janela grande lê como descuido.
 Theme.font = {
     regular = Enum.Font.Gotham,
     medium  = Enum.Font.GothamMedium,
     bold    = Enum.Font.GothamBold,
+    black   = Enum.Font.GothamBlack,
     mono    = Enum.Font.Code,
 }
 
 Theme.text = {
-    title    = 15,   -- nome da janela
-    section  = 12,   -- cabeçalho de grupo
-    label    = 13,   -- rótulo de toggle
-    sub      = 11,   -- descrição sob o rótulo
-    tiny     = 10,   -- rodapé, contador
-    value    = 12,   -- valor numérico em slider
+    heroName = 26,   -- nome do usuário na Home
+    heroSub  = 13,   -- subtítulo da Home
+    title    = 16,   -- nome da janela
+    section  = 13,   -- cabeçalho de grupo
+    label    = 14,   -- rótulo de toggle
+    sub      = 12,   -- descrição
+    tiny     = 11,   -- rodapé
+    stat     = 17,   -- número grande de estatística
+    statLbl  = 11,   -- rótulo sob o número
+    value    = 13,
 }
 
 -- ── Métrica ──────────────────────────────────────────────────────────────────
+-- Janela maior, conforme pedido. 640x460 cabe em 1080p com folga e acomoda a
+-- Home com dashboard sem rolagem excessiva.
 Theme.metric = {
-    pad       = 12,
-    padSm     = 7,
-    radius    = 8,
-    radiusSm  = 5,
-    rowH      = 34,    -- altura de uma linha de toggle
-    tabH      = 40,    -- altura da faixa de abas
-    headH     = 44,    -- altura do cabeçalho
-    stroke    = 1,
-    scrollW   = 4,
-    winW      = 508,
-    winH      = 396,
+    pad      = 14,
+    padSm    = 8,
+    radius   = 9,
+    radiusSm = 6,
+    rowH     = 38,
+    headH    = 58,
+    stroke   = 1,
+    scrollW  = 5,
+    winW     = 640,
+    winH     = 460,
+    sidebarW = 148,
+    statCardH = 74,
+    avatar   = 64,
 }
 
 -- ── Animação ─────────────────────────────────────────────────────────────────
--- Curvas nomeadas. Sem isso, cada lugar inventa o próprio timing e a UI
--- treme em ritmos diferentes.
 Theme.ease = {
-    out  = TweenInfo.new(0.22, Enum.EasingStyle.Quart, Enum.EasingDirection.Out),
-    inOut= TweenInfo.new(0.30, Enum.EasingStyle.Quad,  Enum.EasingDirection.InOut),
-    fast = TweenInfo.new(0.12, Enum.EasingStyle.Quad,  Enum.EasingDirection.Out),
-    pop  = TweenInfo.new(0.38, Enum.EasingStyle.Back,  Enum.EasingDirection.Out),
+    out   = TweenInfo.new(0.22, Enum.EasingStyle.Quart, Enum.EasingDirection.Out),
+    inOut = TweenInfo.new(0.30, Enum.EasingStyle.Quad,  Enum.EasingDirection.InOut),
+    fast  = TweenInfo.new(0.12, Enum.EasingStyle.Quad,  Enum.EasingDirection.Out),
+    pop   = TweenInfo.new(0.38, Enum.EasingStyle.Back,  Enum.EasingDirection.Out),
+    slow  = TweenInfo.new(0.55, Enum.EasingStyle.Quad,  Enum.EasingDirection.Out),
 }
 
-Theme.duration = { hover = 0.12, press = 0.08, open = 0.26, slide = 0.20 }
+-- ── Helpers ──────────────────────────────────────────────────────────────────
 
--- ── Helper: Stroke ───────────────────────────────────────────────────────────
--- Borda de 1px. Usada em quase tudo — sem ela, tudo flutua sem contorno sobre
--- fundo escuro.
 function Theme.stroke(parent, color, thickness)
     local s = Instance.new("UIStroke")
     s.Color = color or Theme.color.line
@@ -818,7 +1079,6 @@ function Theme.stroke(parent, color, thickness)
     return s
 end
 
--- ── Helper: Corner ───────────────────────────────────────────────────────────
 function Theme.corner(parent, radius)
     local c = Instance.new("UICorner")
     c.CornerRadius = UDim.new(0, radius or Theme.metric.radius)
@@ -826,7 +1086,6 @@ function Theme.corner(parent, radius)
     return c
 end
 
--- ── Helper: Padding ──────────────────────────────────────────────────────────
 function Theme.pad(parent, all, h, v)
     local p = Instance.new("UIPadding")
     local a = all or Theme.metric.pad
@@ -836,6 +1095,13 @@ function Theme.pad(parent, all, h, v)
     p.PaddingRight = UDim.new(0, h or a)
     p.Parent = parent
     return p
+end
+
+-- Cor do texto por faixa de valor. Usada nas estatísticas da Home.
+function Theme.healthColor(ratio)
+    if ratio > 0.6 then return Theme.color.ok end
+    if ratio > 0.3 then return Theme.color.warn end
+    return Theme.color.danger
 end
 
 return Theme
@@ -1061,16 +1327,15 @@ end
 MODULES["core/widget"] = function()
 local __src = [=[
 --[[
-    AOTR · Fábrica de Widgets
+    VHub · Fábrica de Widgets
     Arquivo: src/core/widget.lua
-    
-    Cada widget é uma função que devolve {instance, set, destroy}. O contrato é
-    sempre o mesmo, para que a camada de UI nunca precise saber como um controle
-    específico funciona por dentro.
 
-    Estudo aplicado do AirFlow: lá a UI é montada por document.createElement em
-    série, sem componentização — funciona, mas cada tela reimplementa o próprio
-    botão. Aqui cada controle tem um construtor único e um estado declarativo.
+    Cada widget devolve {instance, set, get, destroy}. O contrato é sempre o
+    mesmo, para que a camada de UI nunca precise saber como um controle
+    funciona por dentro.
+
+    Novidades desta versão: cartão de estatística, avatar circular, chip de
+    seleção múltipla (para os modificadores de missão) e grupo de botões.
 --]]
 
 
@@ -1080,7 +1345,7 @@ local Theme = __req("core/theme")
 
 local Widget = {}
 
--- ── Utilidades de instância ──────────────────────────────────────────────────
+-- ── Utilidades ───────────────────────────────────────────────────────────────
 
 local function new(class, props, children)
     local o = Instance.new(class)
@@ -1095,27 +1360,40 @@ local function new(class, props, children)
 end
 Widget.new = new
 
--- Anima uma propriedade numérica com segurança (cancela tween anterior).
 local function tween(obj, info, goal)
-    if obj:FindFirstChild("__tw") then obj.__tw:Destroy() end
     local t = game:GetService("TweenService"):Create(obj, info, goal)
     t:Play()
     return t
 end
 Widget.tween = tween
 
+function Widget.label(props)
+    return new("TextLabel", {
+        Name = props.name or "Label",
+        Size = props.size or UDim2.new(1, 0, 0, 16),
+        Position = props.position,
+        BackgroundTransparency = 1,
+        Text = props.text or "",
+        TextColor3 = props.color or Theme.color.text,
+        TextSize = props.textSize or Theme.text.label,
+        Font = props.font or Theme.font.regular,
+        TextXAlignment = props.align or Enum.TextXAlignment.Left,
+        TextYAlignment = props.valign or Enum.TextYAlignment.Center,
+        TextWrapped = props.wrapped or false,
+        RichText = props.rich or false,
+        ZIndex = props.zindex or 1,
+        Parent = props.parent,
+    })
+end
+
 -- ── Botão ────────────────────────────────────────────────────────────────────
--- Três variantes: solid (accent cheio), ghost (só borda), danger (vermelho vivo).
--- O hover desloca o conteúdo 1px para cima e clareia o fundo — micro-movimento
--- que dá a sensação de superfície física sem exagerar no movimento.
 
 function Widget.button(props)
     local variant = props.variant or "ghost"
-    local parent = props.parent
 
     local base = new("TextButton", {
         Name = props.name or "Btn",
-        Size = props.size or UDim2.new(0, 110, 0, 30),
+        Size = props.size or UDim2.new(0, 110, 0, 32),
         Position = props.position,
         BackgroundColor3 = variant == "solid" and Theme.color.accent
             or variant == "danger" and Theme.color.danger
@@ -1124,7 +1402,8 @@ function Widget.button(props)
         Text = "",
         AutoButtonColor = false,
         BorderSizePixel = 0,
-        Parent = parent,
+        ZIndex = props.zindex or 2,
+        Parent = props.parent,
     })
     Theme.corner(base, Theme.metric.radiusSm)
 
@@ -1139,140 +1418,133 @@ function Widget.button(props)
         TextColor3 = variant == "solid" and Color3.new(1, 1, 1) or Theme.color.text,
         TextSize = props.textSize or Theme.text.label,
         Font = Theme.font.medium,
+        ZIndex = 3,
         Parent = base,
     })
 
-    -- Ícone opcional à esquerda do texto.
     local icon
     if props.icon then
-        label.Position = UDim2.new(0, 20, 0, 0)
-        label.Size = UDim2.new(1, -24, 1, 0)
+        label.Position = UDim2.new(0, 22, 0, 0)
+        label.Size = UDim2.new(1, -28, 1, 0)
         label.TextXAlignment = Enum.TextXAlignment.Left
         icon = new("ImageLabel", {
             Size = UDim2.fromOffset(14, 14),
-            Position = UDim2.new(0, 8, 0.5, -7),
+            Position = UDim2.new(0, 9, 0.5, -7),
             BackgroundTransparency = 1,
             Image = props.icon,
             ImageColor3 = label.TextColor3,
+            ZIndex = 3,
             Parent = base,
         })
     end
 
-    local hovering = false
-    local function restColor()
-        if variant == "solid" then return Theme.color.accent end
-        if variant == "danger" then return Theme.color.danger end
-        return Theme.color.surface
-    end
-
     base.MouseEnter:Connect(function()
-        hovering = true
         tween(base, Theme.ease.fast, {
             BackgroundColor3 = variant == "ghost" and Theme.color.surfaceHi
                 or (variant == "solid" and Theme.color.accentHi or Theme.color.danger),
-            BackgroundTransparency = variant == "ghost" and 0 or 0,
+            BackgroundTransparency = 0,
         })
         stroke.Color = Theme.color.accentHi
         if icon then tween(icon, Theme.ease.fast, { ImageColor3 = Theme.color.accentHi }) end
-        if label then tween(label, Theme.ease.fast,
-            { TextColor3 = variant == "ghost" and Theme.color.accentHi or Color3.new(1, 1, 1) }) end
+        if variant == "ghost" then
+            tween(label, Theme.ease.fast, { TextColor3 = Theme.color.accentHi })
+        end
     end)
 
     base.MouseLeave:Connect(function()
-        hovering = false
         tween(base, Theme.ease.fast, {
-            BackgroundColor3 = restColor(),
+            BackgroundColor3 = variant == "solid" and Theme.color.accent
+                or variant == "danger" and Theme.color.danger
+                or Theme.color.surface,
             BackgroundTransparency = variant == "ghost" and 1 or 0,
         })
         stroke.Color = variant == "ghost" and Theme.color.line or Theme.color.lineHot
-        if icon then tween(icon, Theme.ease.fast,
-            { ImageColor3 = variant == "solid" and Color3.new(1, 1, 1) or Theme.color.text }) end
-        if label then tween(label, Theme.ease.fast,
-            { TextColor3 = variant == "solid" and Color3.new(1, 1, 1) or Theme.color.text }) end
-    end)
-
-    base.MouseButton1Down:Connect(function()
-        tween(base, Theme.ease.fast, { Size = base.Size - UDim2.fromOffset(2, 2) })
+        if icon then
+            tween(icon, Theme.ease.fast, {
+                ImageColor3 = variant == "solid" and Color3.new(1, 1, 1) or Theme.color.text })
+        end
+        if variant == "ghost" then
+            tween(label, Theme.ease.fast, { TextColor3 = Theme.color.text })
+        end
     end)
 
     base.MouseButton1Click:Connect(function()
-        tween(base, Theme.ease.pop, { Size = props.size or UDim2.new(0, 110, 0, 30) })
         if props.onClick then props.onClick() end
     end)
 
     return {
         instance = base,
         set = function(_, text) label.Text = text end,
+        get = function() return label.Text end,
     }
 end
 
 -- ── Toggle ───────────────────────────────────────────────────────────────────
--- Linha inteira clicável (não só o switch) — alvo grande é UI boa.
--- O switch é desenhado, não é imagem: trilho + botão, animados em posição e cor.
 
 function Widget.toggle(props)
-    local parent = props.parent
-
     local row = new("TextButton", {
         Name = props.name or "Toggle",
-        Size = props.size or UDim2.new(1, 0, 0, Theme.metric.rowH),
+        Size = props.size or UDim2.new(1, 0, 0, props.sub and 42 or 34),
         BackgroundColor3 = Theme.color.surface,
         BackgroundTransparency = 1,
         Text = "",
         AutoButtonColor = false,
         BorderSizePixel = 0,
-        Parent = parent,
+        Parent = props.parent,
     })
     Theme.corner(row, Theme.metric.radiusSm)
-    Theme.pad(row, 0, 10, 0)
+    Theme.pad(row, 0, 11, 0)
 
     local label = new("TextLabel", {
-        Size = UDim2.new(1, -48, 0, 15),
-        Position = UDim2.new(0, 0, 0, props.sub and 4 or 9),
+        Size = UDim2.new(1, -50, 0, 16),
+        Position = UDim2.new(0, 0, 0, props.sub and 5 or 9),
         BackgroundTransparency = 1,
         Text = props.text or "Opção",
         TextColor3 = Theme.color.text,
         TextSize = Theme.text.label,
         Font = Theme.font.medium,
         TextXAlignment = Enum.TextXAlignment.Left,
+        ZIndex = 2,
         Parent = row,
     })
 
     if props.sub then
         new("TextLabel", {
-            Size = UDim2.new(1, -48, 0, 12),
-            Position = UDim2.new(0, 0, 0, 19),
+            Size = UDim2.new(1, -50, 0, 13),
+            Position = UDim2.new(0, 0, 0, 21),
             BackgroundTransparency = 1,
             Text = props.sub,
             TextColor3 = Theme.color.textMute,
             TextSize = Theme.text.sub,
             Font = Theme.font.regular,
             TextXAlignment = Enum.TextXAlignment.Left,
+            ZIndex = 2,
             Parent = row,
         })
     end
 
-    -- Switch
     local track = new("Frame", {
         Name = "Track",
-        Size = UDim2.fromOffset(34, 18),
-        Position = UDim2.new(1, -34, 0.5, -9),
+        Size = UDim2.fromOffset(36, 19),
+        Position = UDim2.new(1, -36, 0.5, -9.5),
         BackgroundColor3 = Theme.color.off,
         BorderSizePixel = 0,
+        ZIndex = 2,
         Parent = row,
     })
-    Theme.corner(track, 9)
+    Theme.corner(track, 10)
     local tstroke = Theme.stroke(track, Theme.color.line)
 
     local knob = new("Frame", {
         Name = "Knob",
-        Size = UDim2.fromOffset(12, 12),
-        Position = UDim2.new(0, 3, 0.5, -6),
+        Size = UDim2.fromOffset(13, 13),
+        Position = UDim2.new(0, 3, 0.5, -6.5),
         BackgroundColor3 = Theme.color.textMute,
         BorderSizePixel = 0,
+        ZIndex = 3,
         Parent = track,
     })
-    Theme.corner(knob, 6)
+    Theme.corner(knob, 7)
 
     local state = props.default or false
 
@@ -1283,7 +1555,7 @@ function Widget.toggle(props)
         })
         tstroke.Color = state and Theme.color.accent or Theme.color.line
         tween(knob, info, {
-            Position = state and UDim2.new(0, 19, 0.5, -6) or UDim2.new(0, 3, 0.5, -6),
+            Position = state and UDim2.new(0, 20, 0.5, -6.5) or UDim2.new(0, 3, 0.5, -6.5),
             BackgroundColor3 = state and Theme.color.accentHi or Theme.color.textMute,
         })
         tween(label, info, {
@@ -1310,16 +1582,16 @@ function Widget.toggle(props)
     return {
         instance = row,
         get = function() return state end,
-        set = function(_, v) state = v; render(true); if props.onChange then props.onChange(v) end end,
+        set = function(_, v)
+            state = v; render(true)
+            if props.onChange then props.onChange(v) end
+        end,
     }
 end
 
 -- ── Slider ───────────────────────────────────────────────────────────────────
--- Arrasto com captura de input. O preenchimento é um Frame cujo tamanho segue o
--- valor; o polegar aparece no hover (não fica sempre visível — poluição visual).
 
 function Widget.slider(props)
-    local parent = props.parent
     local min = props.min or 0
     local max = props.max or 100
     local value = props.default or min
@@ -1328,72 +1600,77 @@ function Widget.slider(props)
 
     local wrap = new("Frame", {
         Name = props.name or "Slider",
-        Size = props.size or UDim2.new(1, 0, 0, 40),
+        Size = props.size or UDim2.new(1, 0, 0, 44),
         BackgroundTransparency = 1,
-        Parent = parent,
+        Parent = props.parent,
     })
 
     local label = new("TextLabel", {
-        Size = UDim2.new(1, -60, 0, 14),
+        Size = UDim2.new(1, -70, 0, 15),
         BackgroundTransparency = 1,
         Text = props.text or "Valor",
         TextColor3 = Theme.color.text,
         TextSize = Theme.text.label,
         Font = Theme.font.medium,
         TextXAlignment = Enum.TextXAlignment.Left,
+        ZIndex = 2,
         Parent = wrap,
     })
 
     local readout = new("TextLabel", {
-        Size = UDim2.fromOffset(60, 14),
-        Position = UDim2.new(1, -60, 0, 0),
+        Size = UDim2.fromOffset(70, 15),
+        Position = UDim2.new(1, -70, 0, 0),
         BackgroundTransparency = 1,
         Text = string.format("%." .. decimals .. "f%s", value, suffix),
         TextColor3 = Theme.color.accentHi,
         TextSize = Theme.text.value,
         Font = Theme.font.mono,
         TextXAlignment = Enum.TextXAlignment.Right,
+        ZIndex = 2,
         Parent = wrap,
     })
 
     local track = new("Frame", {
-        Name = "Track",
-        Size = UDim2.new(1, 0, 0, 5),
-        Position = UDim2.new(0, 0, 0, 26),
+        Size = UDim2.new(1, 0, 0, 6),
+        Position = UDim2.new(0, 0, 0, 28),
         BackgroundColor3 = Theme.color.off,
         BorderSizePixel = 0,
+        ZIndex = 2,
         Parent = wrap,
     })
     Theme.corner(track, 3)
 
     local fill = new("Frame", {
-        Name = "Fill",
         Size = UDim2.new(0, 0, 1, 0),
         BackgroundColor3 = Theme.color.accent,
         BorderSizePixel = 0,
+        ZIndex = 3,
         Parent = track,
     })
     Theme.corner(fill, 3)
+    Theme.gradientBrand(fill)
+    local fg = fill:FindFirstChildOfClass("UIGradient")
+    if fg then fg.Rotation = 0 end
 
     local thumb = new("Frame", {
-        Name = "Thumb",
-        Size = UDim2.fromOffset(12, 12),
+        Size = UDim2.fromOffset(13, 13),
         AnchorPoint = Vector2.new(0.5, 0.5),
         Position = UDim2.new(0, 0, 0.5, 0),
         BackgroundColor3 = Theme.color.accentHi,
         BorderSizePixel = 0,
+        ZIndex = 4,
         Parent = track,
     })
-    Theme.corner(thumb, 6)
+    Theme.corner(thumb, 7)
     Theme.stroke(thumb, Theme.color.void, 2)
 
-    -- Zona de toque maior que o trilho: 5px é fino demais para acertar.
     local hit = new("TextButton", {
-        Size = UDim2.new(1, 0, 0, 22),
-        Position = UDim2.new(0, 0, 0, 18),
+        Size = UDim2.new(1, 0, 0, 24),
+        Position = UDim2.new(0, 0, 0, 19),
         BackgroundTransparency = 1,
         Text = "",
         AutoButtonColor = false,
+        ZIndex = 5,
         Parent = wrap,
     })
 
@@ -1409,7 +1686,7 @@ function Widget.slider(props)
 
     local dragging = false
     local function fromX(x)
-        local rel = (x - track.AbsolutePosition.X) / track.AbsoluteSize.X
+        local rel = (x - track.AbsolutePosition.X) / math.max(track.AbsoluteSize.X, 1)
         return min + (max - min) * math.clamp(rel, 0, 1)
     end
 
@@ -1433,9 +1710,6 @@ function Widget.slider(props)
         end
     end)
 
-    track.MouseEnter:Connect(function() tween(thumb, Theme.ease.fast, { Size = UDim2.fromOffset(14, 14) }) end)
-    track.MouseLeave:Connect(function() tween(thumb, Theme.ease.fast, { Size = UDim2.fromOffset(12, 12) }) end)
-
     return {
         instance = wrap,
         get = function() return value end,
@@ -1444,38 +1718,38 @@ function Widget.slider(props)
 end
 
 -- ── Dropdown ─────────────────────────────────────────────────────────────────
--- Fecha ao clicar fora — sem isso, dois dropdowns ficam abertos ao mesmo tempo
--- e a UI parece quebrada.
 
 function Widget.dropdown(props)
-    local parent = props.parent
     local options = props.options or {}
     local value = props.default or options[1]
     local open = false
 
     local wrap = new("Frame", {
         Name = props.name or "Dropdown",
-        Size = props.size or UDim2.new(1, 0, 0, 46),
+        Size = props.size or UDim2.new(1, 0, 0, 50),
         BackgroundTransparency = 1,
         ClipsDescendants = false,
         ZIndex = 5,
-        Parent = parent,
+        Parent = props.parent,
     })
 
-    new("TextLabel", {
-        Size = UDim2.new(1, 0, 0, 14),
-        BackgroundTransparency = 1,
-        Text = props.text or "Seleção",
-        TextColor3 = Theme.color.text,
-        TextSize = Theme.text.label,
-        Font = Theme.font.medium,
-        TextXAlignment = Enum.TextXAlignment.Left,
-        Parent = wrap,
-    })
+    if props.text then
+        new("TextLabel", {
+            Size = UDim2.new(1, 0, 0, 15),
+            BackgroundTransparency = 1,
+            Text = props.text,
+            TextColor3 = Theme.color.text,
+            TextSize = Theme.text.label,
+            Font = Theme.font.medium,
+            TextXAlignment = Enum.TextXAlignment.Left,
+            ZIndex = 6,
+            Parent = wrap,
+        })
+    end
 
     local head = new("TextButton", {
-        Size = UDim2.new(1, 0, 0, 26),
-        Position = UDim2.new(0, 0, 0, 18),
+        Size = UDim2.new(1, 0, 0, 28),
+        Position = UDim2.new(0, 0, 0, 19),
         BackgroundColor3 = Theme.color.surface,
         Text = "",
         AutoButtonColor = false,
@@ -1485,10 +1759,10 @@ function Widget.dropdown(props)
     })
     Theme.corner(head, Theme.metric.radiusSm)
     local hstroke = Theme.stroke(head, Theme.color.line)
-    Theme.pad(head, 0, 9, 0)
+    Theme.pad(head, 0, 10, 0)
 
     local headLabel = new("TextLabel", {
-        Size = UDim2.new(1, -20, 1, 0),
+        Size = UDim2.new(1, -22, 1, 0),
         BackgroundTransparency = 1,
         Text = tostring(value),
         TextColor3 = Theme.color.text,
@@ -1500,31 +1774,30 @@ function Widget.dropdown(props)
     })
 
     local caret = new("TextLabel", {
-        Size = UDim2.fromOffset(12, 12),
-        Position = UDim2.new(1, -18, 0.5, -6),
+        Size = UDim2.fromOffset(14, 14),
+        Position = UDim2.new(1, -20, 0.5, -7),
         BackgroundTransparency = 1,
         Text = "▾",
         TextColor3 = Theme.color.textMute,
-        TextSize = 12,
+        TextSize = 13,
         ZIndex = 7,
         Parent = head,
     })
 
     local list = new("Frame", {
-        Name = "List",
         Size = UDim2.new(1, 0, 0, 0),
         Position = UDim2.new(0, 0, 1, 4),
         BackgroundColor3 = Theme.color.surfaceTop,
         BorderSizePixel = 0,
         Visible = false,
-        ZIndex = 20,
+        ZIndex = 30,
         Parent = wrap,
     })
     Theme.corner(list, Theme.metric.radiusSm)
     Theme.stroke(list, Theme.color.line)
     Theme.pad(list, 4)
 
-    local layout = new("UIListLayout", {
+    new("UIListLayout", {
         SortOrder = Enum.SortOrder.LayoutOrder,
         Padding = UDim.new(0, 2),
         Parent = list,
@@ -1533,7 +1806,7 @@ function Widget.dropdown(props)
     local rows = {}
     for i, opt in ipairs(options) do
         local r = new("TextButton", {
-            Size = UDim2.new(1, 0, 0, 24),
+            Size = UDim2.new(1, 0, 0, 26),
             BackgroundColor3 = Theme.color.surface,
             BackgroundTransparency = 1,
             Text = tostring(opt),
@@ -1543,11 +1816,11 @@ function Widget.dropdown(props)
             TextXAlignment = Enum.TextXAlignment.Left,
             AutoButtonColor = false,
             LayoutOrder = i,
-            ZIndex = 21,
+            ZIndex = 31,
             Parent = list,
         })
         Theme.corner(r, 4)
-        Theme.pad(r, 0, 8, 0)
+        Theme.pad(r, 0, 9, 0)
         r.MouseEnter:Connect(function()
             tween(r, Theme.ease.fast, { BackgroundTransparency = 0, TextColor3 = Theme.color.accentHi })
         end)
@@ -1557,49 +1830,45 @@ function Widget.dropdown(props)
         r.MouseButton1Click:Connect(function()
             value = opt
             headLabel.Text = tostring(opt)
-            Widget._closeOpenDropdown()
             open = false
+            tween(caret, Theme.ease.fast, { Rotation = 0 })
             tween(list, Theme.ease.fast, { Size = UDim2.new(1, 0, 0, 0) })
-            task.delay(0.1, function() list.Visible = false end)
+            task.delay(0.1, function() if not open then list.Visible = false end end)
+            hstroke.Color = Theme.color.line
             if props.onChange then props.onChange(opt) end
         end)
         rows[opt] = r
     end
 
-    function Widget._closeOpenDropdown() end  -- substituído abaixo
-
-    local function closeList()
-        open = false
-        tween(caret, Theme.ease.fast, { Rotation = 0 })
-        tween(list, Theme.ease.fast, { Size = UDim2.new(1, 0, 0, 0) })
-        task.delay(0.1, function()
-            if not open then list.Visible = false end
-        end)
-        hstroke.Color = Theme.color.line
-    end
-
-    local function openList()
-        open = true
-        list.Visible = true
-        local h = #options * 26 + 8
-        tween(list, Theme.ease.out, { Size = UDim2.new(1, 0, 0, h) })
-        tween(caret, Theme.ease.fast, { Rotation = 180 })
-        hstroke.Color = Theme.color.accent
-    end
-
     head.MouseButton1Click:Connect(function()
-        if open then closeList() else openList() end
+        if open then
+            open = false
+            tween(caret, Theme.ease.fast, { Rotation = 0 })
+            tween(list, Theme.ease.fast, { Size = UDim2.new(1, 0, 0, 0) })
+            task.delay(0.1, function() if not open then list.Visible = false end end)
+            hstroke.Color = Theme.color.line
+        else
+            open = true
+            list.Visible = true
+            tween(list, Theme.ease.out, { Size = UDim2.new(1, 0, 0, #options * 28 + 8) })
+            tween(caret, Theme.ease.fast, { Rotation = 180 })
+            hstroke.Color = Theme.color.accent
+        end
     end)
 
-    -- Um só dropdown aberto por vez.
-    local conn
-    conn = game:GetService("UserInputService").InputBegan:Connect(function(input)
+    game:GetService("UserInputService").InputBegan:Connect(function(input)
         if open and input.UserInputType == Enum.UserInputType.MouseButton1 then
             local mp = input.Position
             local ap, sz = wrap.AbsolutePosition, wrap.AbsoluteSize
             local inHead = mp.X >= ap.X and mp.X <= ap.X + sz.X
-                and mp.Y >= ap.Y and mp.Y <= ap.Y + 46
-            if not inHead then closeList() end
+                and mp.Y >= ap.Y and mp.Y <= ap.Y + 50
+            if not inHead then
+                open = false
+                tween(caret, Theme.ease.fast, { Rotation = 0 })
+                tween(list, Theme.ease.fast, { Size = UDim2.new(1, 0, 0, 0) })
+                task.delay(0.1, function() if not open then list.Visible = false end end)
+                hstroke.Color = Theme.color.line
+            end
         end
     end)
 
@@ -1616,40 +1885,260 @@ function Widget.dropdown(props)
     }
 end
 
+-- ── Chips (seleção múltipla) ──────────────────────────────────────────────────
+-- Usado nos modificadores de missão: uma grade de botões que ligam e desligam.
+
+function Widget.chips(props)
+    local options = props.options or {}
+    local selected = {}
+    for _, v in ipairs(props.default or {}) do selected[v] = true end
+
+    local wrap = new("Frame", {
+        Name = props.name or "Chips",
+        Size = props.size or UDim2.new(1, 0, 0, 0),
+        AutomaticSize = Enum.AutomaticSize.Y,
+        BackgroundTransparency = 1,
+        Parent = props.parent,
+    })
+
+    if props.text then
+        new("TextLabel", {
+            Size = UDim2.new(1, 0, 0, 15),
+            BackgroundTransparency = 1,
+            Text = props.text,
+            TextColor3 = Theme.color.text,
+            TextSize = Theme.text.label,
+            Font = Theme.font.medium,
+            TextXAlignment = Enum.TextXAlignment.Left,
+            Parent = wrap,
+        })
+    end
+
+    local grid = new("Frame", {
+        Size = UDim2.new(1, 0, 0, 0),
+        Position = UDim2.new(0, 0, 0, props.text and 19 or 0),
+        AutomaticSize = Enum.AutomaticSize.Y,
+        BackgroundTransparency = 1,
+        Parent = wrap,
+    })
+    new("UIGridLayout", {
+        CellSize = UDim2.new(0, 132, 0, 26),
+        CellPadding = UDim2.new(0, 5, 0, 5),
+        SortOrder = Enum.SortOrder.LayoutOrder,
+        Parent = grid,
+    })
+
+    local buttons = {}
+
+    local function refresh()
+        local list = {}
+        for _, opt in ipairs(options) do
+            if selected[opt] then table.insert(list, opt) end
+        end
+        if props.onChange then props.onChange(list) end
+    end
+
+    for i, opt in ipairs(options) do
+        local b = new("TextButton", {
+            Size = UDim2.new(0, 132, 0, 26),
+            BackgroundColor3 = Theme.color.surface,
+            Text = opt,
+            TextColor3 = Theme.color.textDim,
+            TextSize = Theme.text.sub,
+            Font = Theme.font.medium,
+            AutoButtonColor = false,
+            BorderSizePixel = 0,
+            LayoutOrder = i,
+            Parent = grid,
+        })
+        Theme.corner(b, Theme.metric.radiusSm)
+        local s = Theme.stroke(b, Theme.color.line)
+        Theme.pad(b, 0, 6, 0)
+
+        local function render(animate)
+            local on = selected[opt] == true
+            local info = animate and Theme.ease.fast or TweenInfo.new(0)
+            tween(b, info, {
+                BackgroundColor3 = on and Theme.color.accentLo or Theme.color.surface,
+            })
+            s.Color = on and Theme.color.accent or Theme.color.line
+            tween(b, info, { TextColor3 = on and Color3.new(1, 1, 1) or Theme.color.textDim })
+        end
+        render(false)
+
+        b.MouseButton1Click:Connect(function()
+            selected[opt] = not selected[opt] or nil
+            render(true)
+            refresh()
+        end)
+
+        buttons[opt] = b
+    end
+
+    return {
+        instance = wrap,
+        get = function()
+            local list = {}
+            for _, opt in ipairs(options) do
+                if selected[opt] then table.insert(list, opt) end
+            end
+            return list
+        end,
+        set = function(_, list)
+            selected = {}
+            for _, v in ipairs(list or {}) do selected[v] = true end
+            for opt, b in pairs(buttons) do
+                local on = selected[opt] == true
+                b.BackgroundColor3 = on and Theme.color.accentLo or Theme.color.surface
+                b.TextColor3 = on and Color3.new(1, 1, 1) or Theme.color.textDim
+            end
+            refresh()
+        end,
+    }
+end
+
+-- ── Cartão de estatística ────────────────────────────────────────────────────
+-- O número grande em cima, o rótulo embaixo. É o que dá peso ao dashboard.
+
+function Widget.statCard(props)
+    local card = new("Frame", {
+        Name = props.name or "Stat",
+        Size = props.size or UDim2.new(0, 128, 0, Theme.metric.statCardH),
+        BackgroundColor3 = Theme.color.card,
+        BorderSizePixel = 0,
+        Parent = props.parent,
+    })
+    Theme.corner(card, Theme.metric.radiusSm)
+    local s = Theme.stroke(card, Theme.color.lineSoft)
+    Theme.pad(card, 0, 11, 9)
+
+    -- fio de destaque no topo, em gradiente — detalhe que amarra ao tema
+    local accent = new("Frame", {
+        Size = UDim2.new(1, 0, 0, 2),
+        Position = UDim2.new(0, 0, 0, 0),
+        BackgroundColor3 = Color3.new(1, 1, 1),
+        BorderSizePixel = 0,
+        ZIndex = 2,
+        Parent = card,
+    })
+    Theme.corner(accent, 1)
+    Theme.gradientBrand(accent)
+    local ag = accent:FindFirstChildOfClass("UIGradient")
+    if ag then ag.Rotation = 0 end
+
+    local value = new("TextLabel", {
+        Size = UDim2.new(1, 0, 0, 26),
+        Position = UDim2.new(0, 0, 0, 8),
+        BackgroundTransparency = 1,
+        Text = props.value or "—",
+        TextColor3 = Theme.color.text,
+        TextSize = Theme.text.stat,
+        Font = Theme.font.bold,
+        TextXAlignment = Enum.TextXAlignment.Left,
+        ZIndex = 3,
+        Parent = card,
+    })
+
+    local caption = new("TextLabel", {
+        Size = UDim2.new(1, 0, 0, 14),
+        Position = UDim2.new(0, 0, 1, -18),
+        BackgroundTransparency = 1,
+        Text = string.upper(props.caption or ""),
+        TextColor3 = Theme.color.textMute,
+        TextSize = Theme.text.statLbl,
+        Font = Theme.font.medium,
+        TextXAlignment = Enum.TextXAlignment.Left,
+        ZIndex = 3,
+        Parent = card,
+    })
+
+    return {
+        instance = card,
+        set = function(_, v, color)
+            value.Text = tostring(v)
+            if color then value.TextColor3 = color end
+        end,
+        setCaption = function(_, c) caption.Text = string.upper(tostring(c)) end,
+        get = function() return value.Text end,
+    }
+end
+
+-- ── Avatar circular ──────────────────────────────────────────────────────────
+
+function Widget.avatar(props)
+    local size = props.size or Theme.metric.avatar
+
+    local wrap = new("Frame", {
+        Name = "Avatar",
+        Size = UDim2.fromOffset(size, size),
+        Position = props.position,
+        BackgroundColor3 = Theme.color.surfaceTop,
+        BorderSizePixel = 0,
+        ZIndex = 3,
+        Parent = props.parent,
+    })
+    Theme.corner(wrap, size / 2)
+    local s = Theme.stroke(wrap, Theme.color.accent, 2)
+
+    local img = new("ImageLabel", {
+        Size = UDim2.fromScale(1, 1),
+        BackgroundTransparency = 1,
+        Image = props.image or "",
+        ZIndex = 4,
+        Parent = wrap,
+    })
+    Theme.corner(img, size / 2)
+
+    return {
+        instance = wrap,
+        set = function(_, url)
+            if url and url ~= "" then img.Image = url end
+        end,
+    }
+end
+
 -- ── Seção ────────────────────────────────────────────────────────────────────
--- Cabeçalho com contador de itens ativos. O contador é o detalhe que faz a UI
--- parecer viva: você vê o que está ligado sem ler cada linha.
 
 function Widget.section(props)
-    local parent = props.parent
     local wrap = new("Frame", {
         Name = props.name or "Section",
         Size = UDim2.new(1, 0, 0, 0),
         AutomaticSize = Enum.AutomaticSize.Y,
         BackgroundTransparency = 1,
-        Parent = parent,
+        Parent = props.parent,
     })
 
     local head = new("Frame", {
-        Size = UDim2.new(1, 0, 0, 22),
+        Size = UDim2.new(1, 0, 0, 24),
         BackgroundTransparency = 1,
         Parent = wrap,
     })
 
+    -- barrinha vermelha ao lado do título: âncora visual repetida em toda a UI
+    local tick = new("Frame", {
+        Size = UDim2.fromOffset(3, 12),
+        Position = UDim2.new(0, 0, 0.5, -6),
+        BackgroundColor3 = Theme.color.accent,
+        BorderSizePixel = 0,
+        Parent = head,
+    })
+    Theme.corner(tick, 2)
+
     new("TextLabel", {
-        Size = UDim2.new(1, -70, 1, 0),
+        Size = UDim2.new(1, -80, 1, 0),
+        Position = UDim2.new(0, 11, 0, 0),
         BackgroundTransparency = 1,
         Text = string.upper(props.text or "SEÇÃO"),
-        TextColor3 = Theme.color.textMute,
-        TextSize = Theme.text.tiny,
+        TextColor3 = Theme.color.textDim,
+        TextSize = Theme.text.section,
         Font = Theme.font.bold,
         TextXAlignment = Enum.TextXAlignment.Left,
         Parent = head,
     })
 
     local count = new("TextLabel", {
-        Size = UDim2.fromOffset(66, 16),
-        Position = UDim2.new(1, -66, 0.5, -8),
+        Size = UDim2.fromOffset(72, 18),
+        Position = UDim2.new(1, -72, 0.5, -9),
         BackgroundTransparency = 1,
         Text = "",
         TextColor3 = Theme.color.accent,
@@ -1659,10 +2148,9 @@ function Widget.section(props)
         Parent = head,
     })
 
-    -- fio horizontal que morre antes da borda — mais elegante que linha cheia
     local rule = new("Frame", {
         Size = UDim2.new(1, 0, 0, 1),
-        Position = UDim2.new(0, 0, 0, 21),
+        Position = UDim2.new(0, 0, 0, 23),
         BackgroundColor3 = Theme.color.lineSoft,
         BorderSizePixel = 0,
         Parent = wrap,
@@ -1670,14 +2158,14 @@ function Widget.section(props)
 
     local body = new("Frame", {
         Size = UDim2.new(1, 0, 0, 0),
-        Position = UDim2.new(0, 0, 0, 26),
+        Position = UDim2.new(0, 0, 0, 30),
         AutomaticSize = Enum.AutomaticSize.Y,
         BackgroundTransparency = 1,
         Parent = wrap,
     })
     new("UIListLayout", {
         SortOrder = Enum.SortOrder.LayoutOrder,
-        Padding = UDim.new(0, 2),
+        Padding = UDim.new(0, 3),
         Parent = body,
     })
 
@@ -1691,27 +2179,27 @@ function Widget.section(props)
     }
 end
 
--- ── Divisória ────────────────────────────────────────────────────────────────
+-- ── Diversos ─────────────────────────────────────────────────────────────────
+
 function Widget.divider(parent)
-    return new("Frame", {
+    local d = new("Frame", {
         Size = UDim2.new(1, 0, 0, 1),
         BackgroundColor3 = Theme.color.lineSoft,
         BorderSizePixel = 0,
         Parent = parent,
     })
+    return d
 end
 
--- ── Caixa de texto ───────────────────────────────────────────────────────────
 function Widget.input(props)
-    local parent = props.parent
     local wrap = new("Frame", {
-        Size = props.size or UDim2.new(1, 0, 0, 46),
+        Size = props.size or UDim2.new(1, 0, 0, 50),
         BackgroundTransparency = 1,
-        Parent = parent,
+        Parent = props.parent,
     })
 
     new("TextLabel", {
-        Size = UDim2.new(1, 0, 0, 14),
+        Size = UDim2.new(1, 0, 0, 15),
         BackgroundTransparency = 1,
         Text = props.text or "Campo",
         TextColor3 = Theme.color.text,
@@ -1722,8 +2210,8 @@ function Widget.input(props)
     })
 
     local box = new("TextBox", {
-        Size = UDim2.new(1, 0, 0, 26),
-        Position = UDim2.new(0, 0, 0, 18),
+        Size = UDim2.new(1, 0, 0, 28),
+        Position = UDim2.new(0, 0, 0, 19),
         BackgroundColor3 = Theme.color.surface,
         Text = props.default or "",
         PlaceholderText = props.placeholder or "",
@@ -1738,7 +2226,7 @@ function Widget.input(props)
     })
     Theme.corner(box, Theme.metric.radiusSm)
     local bstroke = Theme.stroke(box, Theme.color.line)
-    Theme.pad(box, 0, 9, 0)
+    Theme.pad(box, 0, 10, 0)
 
     box.Focused:Connect(function() tween(bstroke, Theme.ease.fast, { Color = Theme.color.accent }) end)
     box.FocusLost:Connect(function()
@@ -1751,6 +2239,36 @@ function Widget.input(props)
         get = function() return box.Text end,
         set = function(_, v) box.Text = v end,
     }
+end
+
+function Widget.info(props)
+    local box = new("Frame", {
+        Size = UDim2.new(1, 0, 0, 0),
+        AutomaticSize = Enum.AutomaticSize.Y,
+        BackgroundColor3 = props.danger and Theme.color.accentGhost or Theme.color.surface,
+        BorderSizePixel = 0,
+        LayoutOrder = props.order or 0,
+        Parent = props.parent,
+    })
+    Theme.corner(box, Theme.metric.radiusSm)
+    Theme.stroke(box, props.danger and Theme.color.lineHot or Theme.color.lineSoft)
+    Theme.pad(box, 0, 11, 8)
+
+    new("TextLabel", {
+        Size = UDim2.new(1, 0, 0, 0),
+        AutomaticSize = Enum.AutomaticSize.Y,
+        BackgroundTransparency = 1,
+        Text = props.text or "",
+        TextColor3 = props.danger and Theme.color.textDim or Theme.color.textMute,
+        TextSize = Theme.text.sub,
+        Font = Theme.font.regular,
+        TextWrapped = true,
+        TextXAlignment = Enum.TextXAlignment.Left,
+        TextYAlignment = Enum.TextYAlignment.Top,
+        Parent = box,
+    })
+
+    return { instance = box }
 end
 
 return Widget
@@ -2076,26 +2594,1038 @@ local __chunk = assert(loadstring(__src), "falha ao compilar features/combat")
 return __chunk(__req)
 end
 
+-- ── features/lobby ────────────────────────────────────────────
+MODULES["features/lobby"] = function()
+local __src = [=[
+--[[
+    VHub · Lobby
+    Arquivo: src/features/lobby.lua
+
+    Tudo aqui roda no lobby, onde se cria a missão e se gasta progressão.
+
+    IDENTIFICADORES — verificados em fontes desobfuscadas:
+
+      Criar missão:   GET("S_Missions", "Create", {
+                          Difficulty = <valor>, Type = <tipo>,
+                          Objective = <objetivo>, Name = <mapa> })
+      Modificar:      GET("S_Missions", "Modify", <modificador>)
+      Iniciar:        GET("S_Missions", "Start")
+      Sair:           GET("S_Missions", "Leave")
+
+      Ordem correta: Leave → espera → Create → Modify×N → Start
+
+      Progressão:     GET("S_Equipment", "Upgrade", { <nomes de stat> })
+                      GET("S_Equipment", "Unlock", { <ids de skill> })
+                      GET("S_Equipment", "Weapon", "Blades"|"Spears")
+
+    VALORES VÁLIDOS (listas completas das fontes)
+      Mapas        : Shiganshina, Trost, Outskirts, Forest, Utgard, Docks,
+                     Stohess, Chapel
+      Dificuldade  : Easy, Normal, Hard, Severe, Aberrant
+      Tipo         : Missions | Raids | Waves
+      Objetivo     : Skirmish (só em Missions) | Waves (só em Waves)
+      Modificadores: 12 opções, ver MODIFIERS abaixo
+
+      Raids: Attack Titan→Trost, Armored Titan→Shiganshina,
+             Female Titan→Stohess, Colossal Titan→Shiganshina (só Aberrant)
+
+    Mapa com bônus: workspace:GetAttribute("Boosted_Map") traz o NOME do mapa
+    (validado contra a lista) e "Boosted_Timer" os segundos restantes.
+--]]
+
+
+-- injetado pelo bundler: resolvedor de módulos no escopo deste chunk
+local __req = ...
+local Game = __req("core/game")
+local State = __req("core/state")
+local Util = __req("core/util")
+
+local Lobby = {}
+
+local RunService = game:GetService("RunService")
+local Workspace = game:GetService("Workspace")
+
+-- ── Listas de valores válidos ────────────────────────────────────────────────
+
+Lobby.MAPS = {
+    "Shiganshina", "Trost", "Outskirts", "Forest",
+    "Utgard", "Docks", "Stohess", "Chapel",
+}
+
+Lobby.DIFFICULTIES = { "Easy", "Normal", "Hard", "Severe", "Aberrant" }
+
+Lobby.TYPES = { "Missions", "Raids", "Waves" }
+
+Lobby.OBJECTIVES = { "Skirmish" }
+
+Lobby.MODIFIERS = {
+    "No Perks", "No Skills", "No Memories", "Nightmare", "Oddball",
+    "Injury Prone", "Chronic Injuries", "Fog", "Glass Cannon",
+    "Time Trial", "Boring", "Simple",
+}
+
+Lobby.RAIDS = {
+    ["Attack Titan"]   = "Trost",
+    ["Armored Titan"]  = "Shiganshina",
+    ["Female Titan"]   = "Stohess",
+    ["Colossal Titan"] = "Shiganshina",
+}
+
+-- Mapa com bônus ativo, ou nil.
+function Lobby.boostedMap()
+    local name = Workspace:GetAttribute("Boosted_Map")
+    local timer = Workspace:GetAttribute("Boosted_Timer")
+    if not name or not timer or timer <= 3 then return nil end
+    if not table.find(Lobby.MAPS, name) then return nil end
+    return name, timer
+end
+
+-- ── Criação de missão ────────────────────────────────────────────────────────
+
+Lobby.status = "Ocioso"
+Lobby._lastCreate = 0
+Lobby._lastStart = 0
+Lobby._lastLeave = 0
+
+local function setStatus(s)
+    Lobby.status = s
+end
+
+-- Escolhe o mapa: o bônus tem prioridade quando a opção está ligada.
+function Lobby.pickMap()
+    if State.flags.preferBoosted then
+        local boosted = Lobby.boostedMap()
+        if boosted then return boosted end
+    end
+    local chosen = State.config.mapName
+    if chosen == "Automático" or not table.find(Lobby.MAPS, chosen) then
+        return Lobby.MAPS[math.random(1, #Lobby.MAPS)]
+    end
+    return chosen
+end
+
+function Lobby.createMission()
+    local now = os.clock()
+    if now - Lobby._lastCreate < 8 then return false, "aguarde" end
+    Lobby._lastCreate = now
+
+    local map = Lobby.pickMap()
+    local difficulty = State.config.difficulty
+    local missionType = State.config.missionType
+    local objective = State.config.objective
+
+    -- Objective só é aceito em Missions/Waves; em Raids o servidor usa o nome
+    -- do Titã. Mandar o campo errado faz o Create falhar em silêncio.
+    local args = {
+        Difficulty = difficulty,
+        Type = missionType,
+        Name = map,
+    }
+    if missionType == "Missions" then
+        args.Objective = "Skirmish"
+    elseif missionType == "Waves" then
+        args.Objective = "Waves"
+        args.Name = "Trost"          -- Waves só existe em Trost
+        args.Difficulty = "Easy"     -- e só na dificuldade mais baixa
+    elseif missionType == "Raids" then
+        args.Name = Lobby.RAIDS[State.config.raid] or "Trost"
+        if State.config.raid == "Colossal Titan" then
+            args.Difficulty = "Aberrant"
+            args.Minimum = 3          -- exigido para o Colossal
+        end
+    end
+
+    local result = Game.get("S_Missions", "Create", args)
+    if result then
+        setStatus(("Sala criada · %s · %s"):format(map, difficulty))
+        return true, result
+    end
+
+    setStatus("Falha ao criar a sala")
+    return false
+end
+
+function Lobby.modifyModifiers()
+    local mods = State.config.modifiers
+    if type(mods) ~= "table" or #mods == 0 then return end
+    for _, m in ipairs(mods) do
+        Game.get("S_Missions", "Modify", m)
+        task.wait(0.17)   -- espaçamento observado nas fontes
+    end
+end
+
+function Lobby.startMission()
+    local now = os.clock()
+    if now - Lobby._lastStart < 15 then return false end
+    Lobby._lastStart = now
+
+    local ok, result = Game.get("S_Missions", "Start")
+    setStatus(ok and "Missão iniciada" or "Falha ao iniciar")
+    return ok, result
+end
+
+function Lobby.leaveMission()
+    if os.clock() - Lobby._lastLeave < 3 then return end
+    Lobby._lastLeave = os.clock()
+    Game.get("S_Missions", "Leave")
+end
+
+-- Ciclo completo: sair da sala atual, criar, aplicar modificadores, iniciar.
+function Lobby.autoStartTick()
+    local now = os.clock()
+
+    -- Só age no lobby — em missão não há o que criar.
+    if Game.hasTitans() then return end
+    if now - Lobby._lastLeave < 12 then return end
+
+    Game.get("S_Missions", "Leave")
+    Lobby._lastLeave = now
+    setStatus("Preparando sala…")
+
+    task.spawn(function()
+        task.wait(0.6)
+
+        local ok = Lobby.createMission()
+        if not ok then return end
+
+        task.wait(0.6)
+        Lobby.modifyModifiers()
+
+        task.wait(0.6)
+        Lobby.startMission()
+    end)
+end
+
+-- ── Melhorar atributos ───────────────────────────────────────────────────────
+-- S_Equipment/Upgrade recebe uma LISTA de nomes de stat. Os nomes precisam
+-- bater com os internos do jogo — os que as fontes usam estão em STATS abaixo.
+
+Lobby.STATS = { "Health", "Damage", "Speed", "Gas", "Blade" }
+
+Lobby.upgradesDone = 0
+local lastUpgrade = 0
+
+function Lobby.upgradeAttributes()
+    if os.clock() - lastUpgrade < 3 then return end
+    lastUpgrade = os.clock()
+
+    local ok = Game.get("S_Equipment", "Upgrade", Lobby.STATS)
+    if ok then
+        Lobby.upgradesDone = Lobby.upgradesDone + 1
+        setStatus(("Atributos melhorados (%d)"):format(Lobby.upgradesDone))
+    end
+end
+
+-- ── Árvore de habilidades ────────────────────────────────────────────────────
+-- S_Equipment/Unlock recebe um ARRAY de ids, na ordem raiz→folha.
+-- Os ids abaixo vêm do mapa SKILL_PATHS de uma fonte desobfuscada.
+--
+-- Três trilhas: Left, Middle, Right. Duas builds por trilha.
+
+Lobby.SKILL_PATHS = {
+    Left = {
+        ["Regen VI"] = {
+            "89","88","87","86","85","84","83","82","81","80",
+            "79","78","77","76","75","154","73","72","71","70",
+        },
+        ["Injury III"] = {
+            "98","97","96","95","94","93","92","91","90","80",
+            "79","78","77","76","75","154","73","72","71","70",
+        },
+    },
+    Middle = {
+        ["Damage V"] = {
+            "149","148","147","146","145","144","143","142","141","140",
+            "139","138","125","124","123","122","121","120","119","118",
+            "117","116","115","114","113",
+        },
+        ["Crit Damage V"] = {
+            "137","136","135","134","133","132","131","130","129","128",
+            "127","126","125","124","123","122","121","120","119","118",
+            "117","116","115","114","113",
+        },
+    },
+    Right = {
+        ["Tank VIII"] = {
+            "69","68","67","66","65","64","63","62","61","60",
+            "151","58","45","44","43","42","41","150","39","38",
+        },
+        ["Health XI"] = {
+            "57","56","55","54","53","52","51","50","49","48",
+            "47","46","45","44","43","42","41","150","39","38",
+        },
+    },
+}
+
+-- Trilha -> build escolhida na config
+function Lobby.skillIdsFor(lane)
+    local build = State.config["skill" .. lane]
+    local paths = Lobby.SKILL_PATHS[lane]
+    if not paths then return nil end
+    return paths[build]
+end
+
+Lobby.skillsUnlocked = 0
+local lastSkill = 0
+
+function Lobby.unlockSkills()
+    if os.clock() - lastSkill < 4 then return end
+    lastSkill = os.clock()
+
+    local any = false
+    for _, lane in ipairs({ "Left", "Middle", "Right" }) do
+        local ids = Lobby.skillIdsFor(lane)
+        if ids then
+            local ok = Game.get("S_Equipment", "Unlock", table.clone(ids))
+            if ok then
+                any = true
+                Lobby.skillsUnlocked = Lobby.skillsUnlocked + 1
+            end
+            task.wait(0.3)   -- espaço entre trilhas, para não saturar o remote
+        end
+    end
+
+    if any then
+        setStatus(("Habilidades desbloqueadas (%d)"):format(Lobby.skillsUnlocked))
+    end
+end
+
+-- ── Ciclo ────────────────────────────────────────────────────────────────────
+
+function Lobby.start()
+    if Lobby._conn then return end
+
+    Lobby._conn = RunService.Heartbeat:Connect(function()
+        local ok, err = pcall(function()
+            if State.flags.autoStart then
+                Lobby.autoStartTick()
+            end
+            if State.flags.autoUpgrade then
+                Lobby.upgradeAttributes()
+            end
+            if State.flags.autoSkills then
+                Lobby.unlockSkills()
+            end
+        end)
+        if not ok then warn("[VHub] lobby: " .. tostring(err)) end
+    end)
+end
+
+function Lobby.stop()
+    if Lobby._conn then Lobby._conn:Disconnect(); Lobby._conn = nil end
+end
+
+return Lobby
+
+]=]
+local __chunk = assert(loadstring(__src), "falha ao compilar features/lobby")
+return __chunk(__req)
+end
+
+-- ── features/mission ──────────────────────────────────────────
+MODULES["features/mission"] = function()
+local __src = [=[
+--[[
+    VHub · Missões (combate)
+    Arquivo: src/features/mission.lua
+
+    IDENTIFICADORES — todos verificados em fontes desobfuscadas:
+
+      Ataque (bracketed):
+        POST("Attacks", "Slash", true)      abre o golpe
+        GET("Hitboxes", "Register", part, magnitude, offset)
+        POST("Attacks", "Slash", false)     fecha o golpe
+
+        O par abrir/fechar importa: o servidor valida a JANELA do golpe, não
+        um disparo isolado. Mandar só o Register não registra dano.
+
+      Escapar de agarrão:
+        POST("Attacks", "Slash_Escape")
+        O gatilho é o aparecimento de um filho em PlayerGui.Interface.Buttons.
+        Não existe ChangeState nem PlatformStand — o prompt É o sinal.
+
+      Recarregar lâminas:
+        GET("Blades", "Full_Reload", "Left"|"Right", estação)
+        GET("Blades", "Reload")
+        Sinal de lâmina gasta: atributo "Broken" na parte da lâmina.
+
+      Invulnerabilidade: Character:GetAttribute("IFrames")
+
+    MAGNITUDE — a decisão de risco
+    ---------------------------------
+    Fontes usam 143+rand(10) e até rand(215,230). A segunda é fisicamente
+    impossível: o alcance real da lâmina é o comprimento da arma. É o dado mais
+    fácil do servidor auditar. O padrão aqui é BAIXO e o valor alto é opt-in.
+--]]
+
+
+-- injetado pelo bundler: resolvedor de módulos no escopo deste chunk
+local __req = ...
+local Game = __req("core/game")
+local State = __req("core/state")
+local Util = __req("core/util")
+local Theme = __req("core/theme")
+
+local Mission = {}
+
+local RunService = game:GetService("RunService")
+local Players = game:GetService("Players")
+
+Mission.kills = 0
+Mission.target = nil
+Mission._lastStrike = 0
+Mission._slashOpen = false
+Mission._tracked = {}
+Mission._missionStart = os.clock()
+
+-- ── Pose de ataque ───────────────────────────────────────────────────────────
+
+function Mission.napePose(titan, offset, height)
+    local nape, root = titan.nape, titan.root
+    if not (nape and root) then return nil end
+
+    local away = nape.Position - root.Position
+    away = Vector3.new(away.X, 0, away.Z)
+    if away.Magnitude < 0.01 then
+        local back = -root.CFrame.LookVector
+        away = Vector3.new(back.X, 0, back.Z)
+    end
+    away = away.Unit
+
+    local stand = nape.Position + away * (offset or 4) + Vector3.new(0, height or 2, 0)
+    return CFrame.lookAt(stand, nape.Position)
+end
+
+-- ── Ataque ───────────────────────────────────────────────────────────────────
+-- Abre, registra e fecha. Os três passos no mesmo frame, porque o servidor
+-- valida a janela do golpe.
+
+function Mission.strike(titan)
+    if not titan or not titan.nape then return false end
+
+    Game.post("Attacks", "Slash", true)
+    local ok = Game.get("Hitboxes", "Register",
+        titan.nape, State.config.hitMagnitude, State.config.hitOffset)
+    Game.post("Attacks", "Slash", false)
+
+    return ok
+end
+
+-- ── Escape de agarrão ────────────────────────────────────────────────────────
+-- O prompt de agarrão aparece como filho novo em PlayerGui.Interface.Buttons.
+-- O sinal é observado, não adivinhado.
+
+local escapeConn = nil
+Mission.grabbed = false
+Mission.escapes = 0
+
+function Mission.watchGrabs()
+    if escapeConn then return end
+
+    local lp = Game.getLocalPlayer()
+    local pg = lp and lp:FindFirstChild("PlayerGui")
+    local iface = pg and pg:FindFirstChild("Interface")
+    local buttons = iface and iface:FindFirstChild("Buttons")
+
+    if not buttons then
+        -- Ainda não montou: tenta de novo em instantes.
+        task.delay(3, Mission.watchGrabs)
+        return
+    end
+
+    escapeConn = buttons.ChildAdded:Connect(function(child)
+        if not State.flags.autoEscape then return end
+        if not child:IsA("GuiObject") then return end
+
+        Mission.grabbed = true
+        Util.notify("Agarrão detectado", "Escapando…", 2)
+
+        Game.post("Attacks", "Slash_Escape")
+        Mission.escapes = Mission.escapes + 1
+
+        -- O script de referência remove o prompt depois de escapar. Sem isso o
+        -- elemento fica na tela e o evento dispara de novo em loop.
+        task.delay(0.3, function()
+            pcall(function() child:Destroy() end)
+            Mission.grabbed = false
+        end)
+    end)
+end
+
+-- ── Auto recarregar ──────────────────────────────────────────────────────────
+-- Lâmina quebrada é o atributo "Broken". É a leitura mais robusta entre as
+-- opções (as outras seriam o texto do HUD ou Transparency, ambas frágeis).
+
+local lastReload = 0
+
+function Mission.bladeNeedsReload()
+    local char = Game.getCharacter()
+    if not char then return false end
+
+    local lp = Game.getLocalPlayer()
+    local rig = char:FindFirstChild("Rig_" .. (lp and lp.Name or ""))
+    if not rig then
+        -- Fallback: qualquer filho que comece com Rig_
+        for _, d in ipairs(char:GetChildren()) do
+            if string.sub(d.Name, 1, 4) == "Rig_" then rig = d break end
+        end
+    end
+    if not rig then return false end
+
+    for _, handName in ipairs({ "LeftHand", "RightHand" }) do
+        local hand = rig:FindFirstChild(handName)
+        if hand then
+            for _, blade in ipairs(hand:GetChildren()) do
+                if blade:IsA("BasePart") and blade:GetAttribute("Broken") then
+                    return true
+                end
+            end
+        end
+    end
+    return false
+end
+
+function Mission.reloadBlades()
+    if os.clock() - lastReload < 1.5 then return end
+    lastReload = os.clock()
+
+    local station = Game.getRefillStation()
+    Game.get("Blades", "Full_Reload", "Left", station)
+    Game.get("Blades", "Full_Reload", "Right", station)
+    Game.get("Blades", "Reload")
+end
+
+-- ── Local seguro ─────────────────────────────────────────────────────────────
+-- NÃO existe conceito de zona segura no jogo. A pesquisa confirmou: nenhum
+-- remote, atributo ou região. O que existe são políticas de farm escritas por
+-- scripts (o SafeTime do Smooth Hub).
+--
+-- Aqui o "Local Seguro" é honesto sobre o que faz: mantém o personagem fora do
+-- alcance dos Titãs, recuando quando um chega perto. É posicional, não mágico.
+
+local lastRetreat = 0
+
+function Mission.safeSpotTick()
+    if os.clock() - lastRetreat < 0.5 then return end
+
+    local range = State.config.safeRange
+    local titans = Game.getTitans()
+    local root = Game.getRoot()
+    if not (root and titans[1]) then return end
+
+    -- Já estamos longe o bastante?
+    local nearest = titans[1]
+    if nearest.dist > range then return end
+
+    lastRetreat = os.clock()
+
+    -- Recua no eixo oposto ao Titã, mantendo a altura.
+    local away = root.Position - nearest.root.Position
+    away = Vector3.new(away.X, 0, away.Z)
+    if away.Magnitude < 0.1 then
+        away = Vector3.new(1, 0, 0)
+    end
+    away = away.Unit
+
+    local destination = root.Position + away * State.config.safeDistance
+    root.CFrame = CFrame.new(destination) * (root.CFrame - root.CFrame.Position)
+end
+
+-- ── Teleporte ao objetivo ────────────────────────────────────────────────────
+-- Objetivo lido de ReplicatedStorage.Objectives: cada filho tem .Value (número)
+-- e o atributo "Requirement". Não existe remote; o deslocamento é escrito
+-- direto no CFrame — Humanoid:MoveTo não é usado por nenhuma fonte.
+
+local lastObjectiveTP = 0
+
+function Mission.findObjective()
+    local rs = game:GetService("ReplicatedStorage")
+    local objectives = rs:FindFirstChild("Objectives")
+    if not objectives then return nil end
+
+    local best, bestProgress = nil, -1
+    for _, obj in ipairs(objectives:GetChildren()) do
+        local value = obj:IsA("ValueBase") and obj.Value or nil
+        local req = obj:GetAttribute("Requirement")
+        if type(value) == "number" and type(req) == "number" and req > 0 then
+            local progress = value / req
+            if progress < 1 and progress > bestProgress then
+                best, bestProgress = obj, progress
+            end
+        end
+    end
+    return best
+end
+
+function Mission.tpToObjective()
+    if os.clock() - lastObjectiveTP < 1.0 then return end
+
+    local obj = Mission.findObjective()
+    if not obj then return end
+
+    -- O ValueObject pode estar no ReplicatedStorage; a posição alvo fica no
+    -- mapa. Procuramos uma parte cujo nome contenha o nome do objetivo.
+    local mapName = game.PlaceId
+    local root = Game.getRoot()
+    if not root then return end
+
+    local target = nil
+    for _, d in ipairs(workspace:GetDescendants()) do
+        if d:IsA("BasePart") and string.find(string.lower(d.Name),
+            string.lower(obj.Name), 1, true) then
+            target = d
+            break
+        end
+    end
+    if not target then return end
+
+    lastObjectiveTP = os.clock()
+    root.CFrame = CFrame.new(target.Position + Vector3.new(0, 3, 0))
+end
+
+-- ── Auto matar ───────────────────────────────────────────────────────────────
+
+function Mission.shouldHold()
+    if not State.flags.safeFarm then return false end
+    local safeTime = State.config.safeTime
+    if safeTime <= 0 then return false end
+
+    local titans = Game.getTitans()
+    if #titans > 1 then
+        Mission._missionStart = Mission._missionStart or os.clock()
+        return false
+    end
+
+    local elapsed = os.clock() - (Mission._missionStart or os.clock())
+    return elapsed < safeTime
+end
+
+function Mission.autoKillTick()
+    local titans = Game.getTitans()
+    if #titans == 0 then return end
+
+    local range = State.config.killRange
+    local target
+    for _, t in ipairs(titans) do
+        if t.dist <= range then target = t break end
+    end
+
+    if not target then
+        if State.flags.autoTP then Mission.tpToTitan() end
+        return
+    end
+
+    Mission.target = target
+    if Mission.shouldHold() then return end
+
+    if os.clock() - Mission._lastStrike < State.config.strikeDelay then return end
+    Mission._lastStrike = os.clock()
+
+    if State.flags.killNape then
+        local cf = Mission.napePose(target, State.config.tpOffset, 2.2)
+        local root = Game.getRoot()
+        if cf and root then root.CFrame = cf end
+    end
+
+    Mission.strike(target)
+end
+
+function Mission.tpToTitan()
+    if os.clock() - (Mission._lastTP or 0) < State.config.tpCooldown then return end
+
+    local titan = Game.getNearestTitan()
+    if not titan or titan.dist > State.config.tpRange then return end
+
+    local cf = Mission.napePose(titan, State.config.tpOffset, 2.2)
+    local root = Game.getRoot()
+    if cf and root then
+        root.CFrame = cf
+        Mission._lastTP = os.clock()
+        Mission.target = titan
+    end
+end
+
+-- ── Hitbox da nuca ───────────────────────────────────────────────────────────
+-- Tamanho de fábrica confirmado: Vector3.new(15, 9, 11). Guardar o original
+-- permite restaurar com precisão em vez de chutar.
+-- Multiplicador validado nas fontes: 0 a 2 (máximo 120 studs).
+
+local NAPE_FACTORY_SIZE = Vector3.new(15, 9, 11)
+local expanded = {}
+
+function Mission.expandNapes()
+    local mult = State.config.napeScale
+    for _, t in ipairs(Game.getTitans()) do
+        local nape = t.nape
+        if nape and not expanded[nape] then
+            expanded[nape] = {
+                size = nape.Size,
+                transparency = nape.Transparency,
+                color = nape.Color,
+                material = nape.Material,
+            }
+            nape.Size = NAPE_FACTORY_SIZE * mult
+            nape.Transparency = State.config.napeTransparency
+            nape.Color = Theme.color.accent
+            nape.Material = Enum.Material.Neon
+            nape.CanCollide = false
+        end
+    end
+end
+
+function Mission.restoreNapes()
+    for part, saved in pairs(expanded) do
+        if part and part.Parent then
+            pcall(function()
+                part.Size = saved.size
+                part.Transparency = saved.transparency
+                part.Color = saved.color
+                part.Material = saved.material
+            end)
+        end
+        expanded[part] = nil
+    end
+end
+
+-- Uma nuca que sai do mapa e volta deve ser re-expandida. Sem isso, o Titã
+-- seguinte nasce com hitbox normal e o usuário acha que a feature parou.
+function Mission.refreshExpanded()
+    local live = {}
+    for _, t in ipairs(Game.getTitans()) do live[t.nape] = true end
+
+    for part in pairs(expanded) do
+        if not live[part] or not part.Parent then
+            expanded[part] = nil
+        end
+    end
+    Mission.expandNapes()
+end
+
+-- ── Contagem de abates ───────────────────────────────────────────────────────
+
+function Mission.trackKills()
+    local now = os.clock()
+    local seen = {}
+    for _, t in ipairs(Game.getTitans()) do
+        seen[t.model] = true
+        local rec = Mission._tracked[t.model]
+        if rec then rec.hp = t.hp; rec.seen = now
+        else Mission._tracked[t.model] = { hp = t.hp, seen = now } end
+    end
+    for model, rec in pairs(Mission._tracked) do
+        if not seen[model] then
+            if (now - rec.seen) < 2 and State.flags.autoKill then
+                Mission.kills = Mission.kills + 1
+            end
+            Mission._tracked[model] = nil
+        end
+    end
+end
+
+-- ── Ciclo ────────────────────────────────────────────────────────────────────
+
+function Mission.start()
+    if Mission._conn then return end
+    Mission.watchGrabs()
+
+    Mission._conn = RunService.RenderStepped:Connect(function()
+        local ok, err = pcall(function()
+            if State.flags.autoKill then
+                Mission.autoKillTick()
+            elseif State.flags.autoTPToTitan then
+                Mission.tpToTitan()
+            end
+
+            if State.flags.autoReload then
+                if Mission.bladeNeedsReload() then Mission.reloadBlades() end
+            end
+
+            if State.flags.safeSpot then
+                Mission.safeSpotTick()
+            end
+
+            if State.flags.tpObjective then
+                Mission.tpToObjective()
+            end
+
+            if State.flags.napeExpander then
+                Mission.refreshExpanded()
+            end
+
+            Mission.trackKills()
+        end)
+        if not ok then warn("[VHub] missão: " .. tostring(err)) end
+    end)
+end
+
+function Mission.stop()
+    if Mission._conn then Mission._conn:Disconnect(); Mission._conn = nil end
+    if escapeConn then escapeConn:Disconnect(); escapeConn = nil end
+    Mission.restoreNapes()
+end
+
+function Mission.newMission()
+    Mission._missionStart = os.clock()
+    Mission.kills = 0
+    Mission._tracked = {}
+end
+
+return Mission
+
+]=]
+local __chunk = assert(loadstring(__src), "falha ao compilar features/mission")
+return __chunk(__req)
+end
+
+-- ── features/postmission ──────────────────────────────────────
+MODULES["features/postmission"] = function()
+local __src = [=[
+--[[
+    VHub · Pós-Missão
+    Arquivo: src/features/postmission.lua
+
+    O que acontece quando a missão acaba.
+
+    IDENTIFICADORES verificados:
+      Tentar de novo : GET("Functions", "Retry", "Add")
+      Voltar ao lobby: GET("Functions", "Teleport", "Lobby", nil)
+                       (o nil final é um argumento posicional real, não enfeite)
+      Sair em missão : POST("Functions", "Teleport")
+
+    BAÚ DE RAID — não existe remote
+    ---------------------------------
+    A pesquisa foi conclusiva: não há função de rede para abrir baú. A distinção
+    entre gratuito e premium é feita pelo CAMINHO do elemento na interface, e o
+    botão se chama "OPEN". Portanto:
+
+      1. procuramos um TextButton cujo texto seja "OPEN"
+      2. subimos a árvore e checamos se algum ancestral tem "free" no nome
+      3. acionamos esse botão
+
+    É automação de interface — frágil por natureza. Se o jogo renomear o botão,
+    para de funcionar, e o diagnóstico existe justamente para isso.
+--]]
+
+
+-- injetado pelo bundler: resolvedor de módulos no escopo deste chunk
+local __req = ...
+local Game = __req("core/game")
+local State = __req("core/state")
+local Util = __req("core/util")
+
+local Post = {}
+
+local RunService = game:GetService("RunService")
+local Players = game:GetService("Players")
+
+Post.lastAction = "Ocioso"
+Post._lastRetry = 0
+Post._lastLeave = 0
+Post._lastChest = 0
+
+-- ── Detecção de fim de missão ────────────────────────────────────────────────
+-- Três sinais, em ordem de confiabilidade:
+--   1. Humanoid morto — objetivo, local
+--   2. GUI de resultado — a tela que o jogo mostra ao terminar
+--   3. Nenhum Titã vivo com a pasta presente — fim por conclusão
+
+local function guiShowsResult()
+    local lp = Game.getLocalPlayer()
+    local pg = lp and lp:FindFirstChild("PlayerGui")
+    if not pg then return nil end
+
+    for _, d in ipairs(pg:GetDescendants()) do
+        if d:IsA("TextLabel") or d:IsA("TextButton") then
+            local ok, visible = pcall(function()
+                return d.Visible and (d.AbsoluteSize.X > 0 or d.AbsoluteSize.Y > 0)
+            end)
+            if ok and visible then
+                local t = string.lower(d.Text or "")
+                if string.find(t, "mission complete", 1, true)
+                    or string.find(t, "missão concluída", 1, true)
+                    or string.find(t, "victory", 1, true)
+                    or string.find(t, "defeat", 1, true)
+                    or string.find(t, "results", 1, true) then
+                    return d
+                end
+            end
+        end
+    end
+    return nil
+end
+
+function Post.missionEnded()
+    local hum = Game.getHumanoid()
+    if hum and hum.Health <= 0 then return "morto" end
+
+    local gui = guiShowsResult()
+    if gui then return "resultado" end
+
+    if Game.hasTitans() then
+        local titans = Game.getTitans()
+        if #titans == 0 then return "sem_titas" end
+    end
+
+    return nil
+end
+
+-- ── Retry ────────────────────────────────────────────────────────────────────
+
+function Post.retry()
+    if os.clock() - Post._lastRetry < 4 then return end
+    Post._lastRetry = os.clock()
+
+    Game.get("Functions", "Retry", "Add")
+    Post.lastAction = "Retry enviado"
+end
+
+-- ── Voltar ao lobby ──────────────────────────────────────────────────────────
+-- Duas formas conforme o contexto. Em missão o POST funciona; no resultado o
+-- GET com "Lobby" é o caminho.
+
+function Post.returnToLobby()
+    if os.clock() - Post._lastLeave < 5 then return end
+    Post._lastLeave = os.clock()
+
+    Game.post("Functions", "Teleport")
+    task.wait(0.3)
+    Game.get("Functions", "Teleport", "Lobby", nil)
+
+    Post.lastAction = "Voltando ao lobby"
+end
+
+-- ── Baú de raid ──────────────────────────────────────────────────────────────
+
+-- Procura um botão "OPEN" e classifica pelo caminho na interface.
+local function findChestButton()
+    local lp = Game.getLocalPlayer()
+    local pg = lp and lp:FindFirstChild("PlayerGui")
+    if not pg then return nil end
+
+    for _, d in ipairs(pg:GetDescendants()) do
+        if d:IsA("TextButton") then
+            local ok, visible = pcall(function()
+                return d.Visible and (d.AbsoluteSize.X > 0 or d.AbsoluteSize.Y > 0)
+            end)
+            if ok and visible then
+                local t = string.upper(d.Text or "")
+                if t == "OPEN" or t == "ABRIR" then
+                    -- Sobe a árvore procurando "free" ou "premium" no caminho.
+                    local path = string.lower(d:GetFullName())
+                    local isFree = string.find(path, "free", 1, true) ~= nil
+                    local isPremium = string.find(path, "premium", 1, true) ~= nil
+                    return d, isFree, isPremium
+                end
+            end
+        end
+    end
+    return nil
+end
+
+function Post.openChest()
+    if os.clock() - Post._lastChest < 2 then return end
+
+    local btn, isFree, isPremium = findChestButton()
+    if not btn then return false end
+
+    -- Só abre o que o usuário autorizou. O premium gasta recurso do jogador,
+    -- então nunca é tocado sem a flag explícita.
+    if isPremium and not State.flags.openPremiumChest then return false end
+    if isFree and not State.flags.openFreeChest then return false end
+    if not isFree and not isPremium then return false end
+
+    Post._lastChest = os.clock()
+    pcall(function() btn:Activate() end)
+    Post.lastAction = "Baú aberto"
+    return true
+end
+
+-- ── Reexecutar ao teleportar ─────────────────────────────────────────────────
+-- Quando o jogador troca de lugar, o script morre com a sessão. Para voltar
+-- sozinho é preciso re-executar o loader — o que exige que o executor suporte
+-- re-injeção. Guardamos o estado e tentamos.
+
+function Post.setupRejoin()
+    local lp = Game.getLocalPlayer()
+    if not lp then return end
+
+    lp.OnTeleport:Connect(function()
+        Post.lastAction = "Teleportando…"
+    end)
+
+    -- Detecta troca de lugar por mudança de PlaceId entre leituras.
+    task.spawn(function()
+        local lastPlace = game.PlaceId
+        while true do
+            task.wait(2)
+            if game.PlaceId ~= lastPlace then
+                lastPlace = game.PlaceId
+                Post.lastAction = "Lugar mudou"
+            end
+        end
+    end)
+end
+
+-- ── Ciclo ────────────────────────────────────────────────────────────────────
+
+local lastCheck = 0
+
+function Post.tick()
+    if os.clock() - lastCheck < 1.5 then return end
+    lastCheck = os.clock()
+
+    -- O baú pode aparecer a qualquer momento, então é checado sempre.
+    if State.flags.openFreeChest or State.flags.openPremiumChest then
+        Post.openChest()
+    end
+
+    if not State.flags.autoRetry and not State.flags.autoReturnLobby then return end
+
+    local ended = Post.missionEnded()
+    if not ended then return end
+
+    if State.flags.autoRetry then
+        Post.retry()
+    elseif State.flags.autoReturnLobby then
+        Post.returnToLobby()
+    end
+end
+
+function Post.start()
+    if Post._conn then return end
+
+    Post.setupRejoin()
+
+    Post._conn = RunService.Heartbeat:Connect(function()
+        local ok, err = pcall(Post.tick)
+        if not ok then warn("[VHub] pós-missão: " .. tostring(err)) end
+    end)
+end
+
+function Post.stop()
+    if Post._conn then Post._conn:Disconnect(); Post._conn = nil end
+end
+
+return Post
+
+]=]
+local __chunk = assert(loadstring(__src), "falha ao compilar features/postmission")
+return __chunk(__req)
+end
+
 -- ── features/utility ──────────────────────────────────────────
 MODULES["features/utility"] = function()
 local __src = [=[
 --[[
-    AOTR · Utilidades
+    VHub · Utilidades de sistema
     Arquivo: src/features/utility.lua
 
-    Auto Reabastecer, Anti-AFK, Retry Instantâneo e farms.
+    O que sobra depois que combate, lobby e pós-missão foram para os próprios
+    módulos: manter a sessão viva e oferecer as ações manuais avulsas.
 
-    DUAS CORREÇÕES QUE MUDARAM O DESENHO DESTE MÓDULO
-    -------------------------------------------------
-    1. NÃO EXISTE remote de roll de família. A rolagem é pura automação de
-       interface: procura-se um botão cujo texto começa com "ROLL", clica, e
-       depois LÊ-SE o resultado raspando o texto da tela no formato
-       "Nome (Raridade)". A versão anterior deste arquivo chamava
-       Game.findRemote("roll") e nunca acharia nada.
-
-    2. As raridades são: COMMON, UNCOMMON, RARE, EPIC, LEGENDARY, MYTHIC,
-       SECRET, EXCLUSIVE. É MYTHIC, não "Mythical". A tabela abaixo está na
-       ordem interna real do jogo.
+    Mudança em relação à versão anterior: recarregar lâminas, retry e farms
+    saíram daqui. Cada um foi para o módulo dono do assunto — mission, post.
+    Este arquivo cuida só do que é transversal.
 --]]
 
 
@@ -2107,27 +3637,17 @@ local Util = __req("core/util")
 
 local Utility = {}
 
-local Players = game:GetService("Players")
 local RunService = game:GetService("RunService")
 local VirtualUser = game:GetService("VirtualUser")
-local UserInputService = game:GetService("UserInputService")
-
--- ── Raridades (tabela interna real, ordem crescente) ─────────────────────────
-
-Utility.RANK = {
-    COMMON = 1, UNCOMMON = 2, RARE = 3, EPIC = 4,
-    LEGENDARY = 5, MYTHIC = 6, SECRET = 7, EXCLUSIVE = 8,
-}
-
-function Utility.rankOf(rarity)
-    return Utility.RANK[string.upper(tostring(rarity or ""))] or 0
-end
 
 -- ── Anti-AFK ─────────────────────────────────────────────────────────────────
+-- O Roblox desconecta após 20 minutos de inatividade. O Idled é o gatilho
+-- oficial do cliente; capturamos nele e simulamos um clique.
 
 function Utility.setupAntiAfk()
     local lp = Game.getLocalPlayer()
     if not lp or Utility._afkConn then return end
+
     Utility._afkConn = lp.Idled:Connect(function()
         if not State.flags.antiAfk then return end
         pcall(function()
@@ -2139,246 +3659,72 @@ function Utility.setupAntiAfk()
     end)
 end
 
--- ── Auto Reabastecer ─────────────────────────────────────────────────────────
--- O sinal de lâmina gasta é o atributo `Broken` na parte da lâmina.
--- A recarga usa a estação física do mapa como argumento.
+-- Reforço periódico: o Idled às vezes não dispara quando o cliente acha que
+-- houve input recente.
+local afkAcc = 0
 
-local lastReload = 0
-
-function Utility.refillTick()
-    if os.clock() - lastReload < 1.0 then return end
-
-    local station = Game.getRefillStation()
-    local lp = Game.getLocalPlayer()
-
-    -- Sem estação e sem cargas, não há o que fazer.
-    local refills = Game.getRefills()
-    if not station and (not refills or refills <= 0) then return end
-
-    local blade = Game.getBlade()
-    local broken = blade and blade:GetAttribute("Broken")
-
-    if broken or State.flags.autoRefill then
-        lastReload = os.clock()
-        Game.get("Blades", "Full_Reload", "Left", station)
-        Game.get("Blades", "Full_Reload", "Right", station)
-        Game.get("Blades", "Reload")
-    end
-
-    if State.flags.infiniteGas and station then
-        Game.post("Attacks", "Reload", station)
-    end
-end
-
--- ── Auto Roll de Família (automação de interface) ────────────────────────────
--- Não há remote: procura-se o botão na PlayerGui, clica, e lê-se o resultado.
-
-local function isTextObject(obj)
-    return obj:IsA("TextLabel") or obj:IsA("TextButton") or obj:IsA("TextBox")
-end
-
-local function textOf(obj)
-    local ok, t = pcall(function() return obj.Text end)
-    return ok and tostring(t) or ""
-end
-
-local function isShown(obj)
-    local ok, v = pcall(function()
-        return obj.Visible and (obj.AbsoluteSize.X > 0 or obj.AbsoluteSize.Y > 0)
+function Utility.antiAfkPulse()
+    pcall(function()
+        VirtualUser:CaptureController()
+        VirtualUser:Button2Down(Vector2.new(0, 0), workspace.CurrentCamera.CFrame)
+        task.wait(0.05)
+        VirtualUser:Button2Up(Vector2.new(0, 0), workspace.CurrentCamera.CFrame)
     end)
-    return ok and v or false
 end
 
-function Utility.findRollButton()
-    local lp = Game.getLocalPlayer()
-    local pg = lp and lp:FindFirstChild("PlayerGui")
-    if not pg then return nil end
+-- ── Ações manuais ────────────────────────────────────────────────────────────
+-- Atalhos que o usuário dispara pelo painel, sem precisar de um ciclo ligado.
 
-    for _, d in ipairs(pg:GetDescendants()) do
-        if isTextObject(d) and isShown(d) then
-            local t = textOf(d):upper()
-            if string.sub(t, 1, 4) == "ROLL" then return d end
-        end
-    end
-    return nil
+function Utility.retryNow()
+    Game.get("Functions", "Retry", "Add")
+    Util.notify("Missão", "Retry enviado.")
 end
 
--- Lê o par "Nome (Raridade)" exibido após a rolagem.
-function Utility.readFamily()
-    local lp = Game.getLocalPlayer()
-    local pg = lp and lp:FindFirstChild("PlayerGui")
-    if not pg then return nil end
-
-    for _, d in ipairs(pg:GetDescendants()) do
-        if isTextObject(d) and isShown(d) then
-            local name, rarity = textOf(d):match("^(.-)%s*%((%a+)%)$")
-            if name and Utility.RANK[string.upper(rarity)] then
-                return name, string.upper(rarity)
-            end
-        end
-    end
-    return nil
+function Utility.leaveToLobby()
+    Game.post("Functions", "Teleport")
+    task.wait(0.3)
+    Game.get("Functions", "Teleport", "Lobby", nil)
+    Util.notify("Missão", "Voltando ao lobby.")
 end
 
-function Utility.pressButton(btn)
-    if not btn then return false end
-    -- TextButton aceita ativação direta; se falhar, simulamos o clique.
-    if btn:IsA("TextButton") or btn:IsA("ImageButton") then
-        local ok = pcall(function()
-            local vim = game:GetService("VirtualInputManager")
-            local pos = btn.AbsolutePosition + btn.AbsoluteSize / 2
-            vim:SendMouseButtonEvent(pos.X, pos.Y, 0, true, game, 1)
-            task.wait(0.05)
-            vim:SendMouseButtonEvent(pos.X, pos.Y, 0, false, game, 1)
-        end)
-        return ok
-    end
-    return false
+function Utility.reloadBladesNow()
+    local station = Game.getRefillStation()
+    Game.get("Blades", "Full_Reload", "Left", station)
+    Game.get("Blades", "Full_Reload", "Right", station)
+    Game.get("Blades", "Reload")
+    Util.notify("Lâminas", "Recarga enviada.")
 end
 
-Utility.rollStats = { rolls = 0, best = nil, bestRank = 0, log = {} }
+-- ── Informações do executor ──────────────────────────────────────────────────
 
-local lastRoll = 0
-
-function Utility.rollTick()
-    if os.clock() - lastRoll < 0.8 then return end
-
-    -- Verifica o resultado da rolagem ANTERIOR.
-    local name, rarity = Utility.readFamily()
-    if name then
-        local rank = Utility.rankOf(rarity)
-        if rank > (Utility.rollStats.bestRank or 0) then
-            Utility.rollStats.best = name .. " (" .. rarity .. ")"
-            Utility.rollStats.bestRank = rank
-            Utility.rollStats.log[#Utility.rollStats.log + 1] = Utility.rollStats.best
-            if #Utility.rollStats.log > 30 then table.remove(Utility.rollStats.log, 1) end
-            if rank >= 6 then   -- MYTHIC ou melhor
-                Utility.notifyRoll(name, rarity)
-            end
-        end
-    end
-
-    local btn = Utility.findRollButton()
-    if btn then
-        lastRoll = os.clock()
-        if Utility.pressButton(btn) then
-            Utility.rollStats.rolls = Utility.rollStats.rolls + 1
-        end
-    end
-end
-
-Utility._onRare = nil
-
-function Utility.notifyRoll(name, rarity)
-    if Utility._onRare then
-        pcall(Utility._onRare, name, rarity)
-    end
-end
-
--- ── Retry Instantâneo ────────────────────────────────────────────────────────
--- O verbo real é GET("Functions","Retry","Add").
-
-local lastRetry = 0
-
-function Utility.retryTick()
-    if os.clock() - lastRetry < 3 then return end
-
-    local hum = Game.getHumanoid()
-    if hum and hum.Health <= 0 then
-        lastRetry = os.clock()
-        Game.get("Functions", "Retry", "Add")
-        return
-    end
-
-    -- GUI de resultado visível sinaliza fim de missão.
-    local lp = Game.getLocalPlayer()
-    local pg = lp and lp:FindFirstChild("PlayerGui")
-    if pg then
-        for _, d in ipairs(pg:GetDescendants()) do
-            if isTextObject(d) and isShown(d) then
-                local t = string.lower(textOf(d))
-                if string.find(t, "mission complete", 1, true)
-                    or string.find(t, "missão concluída", 1, true)
-                    or string.find(t, "retry", 1, true) then
-                    lastRetry = os.clock()
-                    Game.get("Functions", "Retry", "Add")
-                    return
-                end
-            end
-        end
-    end
-end
-
--- ── Maestria ─────────────────────────────────────────────────────────────────
--- Não existe remote de maestria. O que existe é uso de habilidade:
--- GET("S_Skills","Usage", "<id>") com ids numéricos em string.
--- Ids confirmados nas fontes: "108", "14", "23".
-
-Utility.SKILL_IDS = { "108", "14", "23" }
-local lastSkill = 0
-local skillIndex = 1
-
-function Utility.masteryTick()
-    if os.clock() - lastSkill < 2.5 then return end
-    lastSkill = os.clock()
-
-    local id = Utility.SKILL_IDS[skillIndex]
-    skillIndex = skillIndex % #Utility.SKILL_IDS + 1
-    Game.get("S_Skills", "Usage", id)
-end
-
--- ── Farm de missões ──────────────────────────────────────────────────────────
--- Missões são acionadas pela interface. Procura-se um botão de missão/raid
--- visível e aciona. Sem remote dedicado — confirmado nas duas fontes.
-
-local lastQuest = 0
-
-function Utility.questTick()
-    if os.clock() - lastQuest < 5 then return end
-
-    local lp = Game.getLocalPlayer()
-    local pg = lp and lp:FindFirstChild("PlayerGui")
-    if not pg then return end
-
-    for _, d in ipairs(pg:GetDescendants()) do
-        if isTextObject(d) and isShown(d) then
-            local t = string.lower(textOf(d))
-            if string.find(t, "start mission", 1, true)
-                or string.find(t, "iniciar missão", 1, true)
-                or string.find(t, "daily", 1, true) then
-                if Utility.pressButton(d) then
-                    lastQuest = os.clock()
-                    return
-                end
-            end
-        end
-    end
+function Utility.envInfo()
+    return {
+        executor = Util.executorName(),
+        placeId = game.PlaceId,
+        gameId = game.GameId,
+        jobId = game.JobId,
+        kind = Game.placeKind(),
+        hasTitans = Game.hasTitans(),
+    }
 end
 
 -- ── Ciclo ────────────────────────────────────────────────────────────────────
 
 function Utility.start()
     Utility.setupAntiAfk()
+    if Utility._conn then return end
 
+    afkAcc = 0
     Utility._conn = RunService.Heartbeat:Connect(function(dt)
         local ok, err = pcall(function()
-            if State.flags.autoRefill or State.flags.infiniteGas then
-                Utility.refillTick()
-            end
-            if State.flags.autoRoll then
-                Utility.rollTick()
-            end
-            if State.flags.instantRetry then
-                Utility.retryTick()
-            end
-            if State.flags.masteryFarm then
-                Utility.masteryTick()
-            end
-            if State.flags.goldFarm then
-                Utility.questTick()
+            if not State.flags.antiAfk then return end
+            afkAcc = afkAcc + dt
+            if afkAcc >= 60 then
+                afkAcc = 0
+                Utility.antiAfkPulse()
             end
         end)
-        if not ok then warn("[AOTR] utilidades: " .. tostring(err)) end
+        if not ok then warn("[VHub] utilidades: " .. tostring(err)) end
     end)
 end
 
@@ -2672,7 +4018,7 @@ function Visuals.tick()
                     -- O tipo do Titã existe SÓ no nome do modelo — não há
                     -- StringValue nem atributo de variante no rig.
                     local parts = { titan.name }
-                    if State.flags.espDistance then
+                    if State.flags.espText then
                         table.insert(parts, string.format("%dm", math.floor(titan.dist)))
                     end
                     d.label.Text = table.concat(parts, "  ·  ")
@@ -2739,13 +4085,13 @@ end
 
 function Visuals.mount(gui)
     if not gui then
-        warn("[AOTR] ESP: nenhum ScreenGui recebido; o ESP ficará inativo.")
+        warn("[VHub] ESP: nenhum ScreenGui recebido; o ESP ficará inativo.")
         return false
     end
     screen = gui
 
     container = Util.tag(Instance.new("Frame"))
-    container.Name = "AOTR_ESP"
+    container.Name = "VHub_ESP"
     container.Size = UDim2.fromScale(1, 1)
     container.BackgroundTransparency = 1
     container.ZIndex = 0
@@ -2754,7 +4100,7 @@ function Visuals.mount(gui)
     Visuals._conn = RunService.RenderStepped:Connect(function()
         if not State.flags.esp then return end
         local ok, err = pcall(Visuals.tick)
-        if not ok then warn("[AOTR] ESP: " .. tostring(err)) end
+        if not ok then warn("[VHub] ESP: " .. tostring(err)) end
     end)
     return true
 end
@@ -2787,24 +4133,18 @@ end
 MODULES["ui/interface"] = function()
 local __src = [=[
 --[[
-    AOTR · Interface
+    VHub · Interface
     Arquivo: src/ui/interface.lua
 
-    Janela arrastável, abas laterais, rolagem suave, busca de recursos,
-    minimizar e notificações. Tudo em PT-BR.
+    Estrutura de abas:
+      Home     — dashboard: identidade, estatísticas ao vivo, jogo atual
+      Missões  — combate (só faz sentido em campo)
+      Lobby    — criação de missão e progressão (só no lobby)
+      Visual   — ESP
+      Config   — sistema, persistência, diagnóstico
 
-    ESTUDO APLICADO DO AIRFLOW
-    --------------------------
-    Do AirFlow vem a estrutura: cabeçalho com identidade, faixa de navegação,
-    conteúdo em cartões, gradiente de fundo feito em canvas no original.
-    Roblox não tem canvas livre, então o gradiente aqui é UIGradient multi-parada
-    (24 stops pré-computados no tema) — mesmo efeito, sem custo de frame.
-
-    O que muda: o AirFlow usa uma única lista longa por tela. Aqui há BUSCA,
-    porque com 20+ recursos a lista fica difícil de navegar. É a diferença entre
-    "bonito" e "usável".
-
-    Atalho: RightControl para mostrar/esconder.
+    O logo do VHub aparece em dois lugares: pequeno no cabeçalho (marca) e
+    grande na Home (destaque). O arquivo é hospedado junto ao script.
 --]]
 
 
@@ -2815,6 +4155,7 @@ local Widget = __req("core/widget")
 local State = __req("core/state")
 local Util = __req("core/util")
 local Game = __req("core/game")
+local Stats = __req("core/stats")
 
 local UI = {}
 
@@ -2823,122 +4164,76 @@ local UserInputService = game:GetService("UserInputService")
 local TweenService = game:GetService("TweenService")
 local RunService = game:GetService("RunService")
 
-local _LP_cache
-local function LP()
-    if _LP_cache and _LP_cache.Parent then return _LP_cache end
-    _LP_cache = Players.LocalPlayer
-    return _LP_cache
-end
+-- ── Assets ───────────────────────────────────────────────────────────────────
+-- Hospedados no mesmo repositório do script. Se falharem, a UI funciona sem
+-- eles — nenhum ImageLabel quebra a montagem.
+local ASSET_BASE = "https://raw.githubusercontent.com/ViegasAgro123/VHub/main/assets"
+UI.LOGO = ASSET_BASE .. "/vhub-logo.png"
+UI.LOGO_LG = ASSET_BASE .. "/vhub-logo-lg.png"
 
-local gui, root, body, sidebar, content, statusBar
+local gui, root, sidebar, content, statusBar
 local tabs = {}
 local pages = {}
-local activeTab = "combate"
+local activeTab = "home"
 local minimized = false
 local toasts = {}
+local statCards = {}
 
--- ── Registro de recursos ─────────────────────────────────────────────────────
--- Cada recurso se declara uma vez. A UI gera o controle certo a partir do tipo.
--- É isso que torna trivial adicionar um recurso novo: uma linha na tabela.
+-- Registro dos controles para o rebuild após carregar configuração.
+-- Precisa existir ANTES dos builders rodarem — eles escrevem aqui.
+UI.controls = {}
+UI.VERSION = "2.0.0"
 
-local FEATURES = {
-    combate = {
-        label = "Combate",
-        icon = "⚔",
-        items = {
-            { type = "toggle", flag = "killAura",     text = "Kill Aura",         sub = "Ataca Titãs automaticamente no alcance" },
-            { type = "toggle", flag = "killAuraNape", text = "Mirar na Nuca",     sub = "Registra o golpe na hitbox crítica" },
-            { type = "toggle", flag = "autoTP",       text = "Auto TP ao Titã",   sub = "Teleporta para trás da nuca mais próxima" },
-            { type = "toggle", flag = "napeExpander", text = "Nape Expander",     sub = "Amplia e destaca a nuca para mira manual" },
-            { type = "divider" },
-            { type = "slider", flag = "killAuraRange", text = "Alcance do Aura",  min = 5,  max = 150, suffix = " studs" },
-            { type = "slider", flag = "killAuraDelay", text = "Intervalo",        min = 0.05, max = 1, decimals = 2, suffix = "s" },
-            { type = "slider", flag = "tpOffset",      text = "Distância da Nuca", min = 1,  max = 12, suffix = " studs" },
-            { type = "slider", flag = "napeScale",     text = "Escala da Nuca",    min = 1,  max = 6, decimals = 1, suffix = "x" },
-            { type = "info",  text = "O alcance real da lâmina neste jogo é curto. Valores altos de 'Alcance do Aura' exigem a magnitude estendida em Avançado." },
-        },
-    },
-    recursos = {
-        label = "Recursos",
-        icon = "◆",
-        items = {
-            { type = "toggle", flag = "autoRefill",   text = "Auto Reabastecer", sub = "Recarrega lâminas quebradas automaticamente" },
-            { type = "toggle", flag = "infiniteGas",  text = "Gás Infinito",     sub = "Aciona a estação de reabastecimento sem parar" },
-            { type = "divider" },
-            { type = "toggle", flag = "autoRoll",     text = "Auto Roll Família", sub = "Gira o sistema de famílias pela interface" },
-            { type = "toggle", flag = "masteryFarm",  text = "Farm de Maestria", sub = "Repete habilidades para subir maestria" },
-            { type = "toggle", flag = "goldFarm",     text = "Farm de Ouro & XP", sub = "Repete missões em sequência" },
-            { type = "toggle", flag = "instantRetry", text = "Retry Instantâneo", sub = "Reinicia a missão assim que termina" },
-            { type = "info", text = "Gás não existe como valor no cliente — 'Gás Infinito' aciona a estação de reabastecimento, que é o que os hubs reais fazem." },
-        },
-    },
-    visual = {
-        label = "Visual",
-        icon = "◉",
-        items = {
-            { type = "toggle", flag = "esp",         text = "Titan ESP",       sub = "Mostra Titãs através das paredes" },
-            { type = "toggle", flag = "espBox",      text = "Caixa" },
-            { type = "toggle", flag = "espLine",     text = "Linha de Rastreio" },
-            { type = "toggle", flag = "espText",     text = "Nome e Tipo" },
-            { type = "toggle", flag = "espHealth",   text = "Barra de Vida" },
-            { type = "toggle", flag = "espNape",     text = "Marcar Nuca",     sub = "Ponto no alvo crítico exato" },
-            { type = "toggle", flag = "espBossOnly", text = "Somente Chefes",  sub = "Filtra Titãs puros e anormais" },
-            { type = "dropdown", flag = "espColor",  text = "Cor do ESP",
-              options = { "Vermelho", "Branco", "Verde", "Azul", "Amarelo", "Rosa", "Ciano" } },
-            { type = "slider", flag = "espMaxDist",  text = "Distância Máxima", min = 100, max = 2000, suffix = " studs" },
-            { type = "slider", flag = "espThickness", text = "Espessura",       min = 1, max = 4, decimals = 1 },
-        },
-    },
-    sistema = {
-        label = "Sistema",
-        icon = "⚙",
-        items = {
-            { type = "toggle", flag = "antiAfk",      text = "Anti-AFK",       sub = "Impede desconexão por inatividade" },
-            { type = "toggle", flag = "watermark",    text = "Marca d'Água" },
-            { type = "toggle", flag = "notifications",text = "Notificações" },
-            { type = "divider" },
-            { type = "toggle", flag = "safeFarm",     text = "Modo Seguro",    sub = "Trava a missão por 32s para evitar shadow ban" },
-            { type = "slider", flag = "safeTime",     text = "Tempo Mínimo",   min = 0, max = 90, suffix = "s",
-              note = "0 desliga a proteção" },
-            { type = "divider" },
-            { type = "button", text = "Salvar Configuração", variant = "ghost", onClick = function()
-                if State.save() then
-                    UI.notify("Configuração", "Salvo com sucesso.")
-                else
-                    UI.notify("Configuração", "Seu executor não permite salvar arquivos.", 4)
-                end
-            end },
-            { type = "button", text = "Carregar Configuração", variant = "ghost", onClick = function()
-                if State.load() then
-                    UI.rebuild()
-                    UI.notify("Configuração", "Carregada.")
-                else
-                    UI.notify("Configuração", "Nenhum arquivo encontrado.", 4)
-                end
-            end },
-            { type = "button", text = "Diagnóstico do Jogo", variant = "solid", onClick = function()
-                UI.showDiagnostic()
-            end },
-            { type = "button", text = "Checar Marcação da Conta", variant = "danger", onClick = function()
-                UI.checkFlag()
-            end },
-        },
-    },
+-- ── Definição das abas ───────────────────────────────────────────────────────
+
+local TABS = {
+    { key = "home",    label = "Home",    icon = "⌂" },
+    { key = "missoes", label = "Missões", icon = "⚔" },
+    { key = "lobby",   label = "Lobby",   icon = "⌸" },
+    { key = "visual",  label = "Visual",  icon = "◉" },
+    { key = "config",  label = "Config",  icon = "⚙" },
 }
 
-UI.FEATURES = FEATURES
-UI.controls = {}   -- [flag] = widget, para rebuild
+local GROUP = {
+    missaoTitas = {
+        "autoKill", "autoReload", "autoEscape", "autoTPToTitan",
+    },
+    missaoMov = {
+        "safeSpot", "tpObjective",
+    },
+    missaoNuca = {
+        "napeExpander", "showNape",
+    },
+    posMissao = {
+        "autoRetry", "autoReturnLobby", "openFreeChest", "openPremiumChest",
+    },
+    lobbyMissao = {
+        "autoStart", "preferBoosted",
+    },
+    lobbyMelhoria = {
+        "autoUpgrade", "autoSkills",
+    },
+    visual = {
+        "esp", "espBox", "espLine", "espText", "espHealth", "espNape", "espBossOnly",
+    },
+    sistema = {
+        "antiAfk", "watermark", "notifications", "safeFarm",
+    },
+}
 
 -- ── Construção da janela ─────────────────────────────────────────────────────
 
 local function buildRoot()
     gui = Instance.new("ScreenGui")
-    gui.Name = "AOTR_UI"
+    gui.Name = "VHub_UI"
     gui.ResetOnSpawn = false
     gui.IgnoreGuiInset = true
     gui.ZIndexBehavior = Enum.ZIndexBehavior.Sibling
     gui.DisplayOrder = 999
-    gui.Parent = LP():WaitForChild("PlayerGui")
+    gui.Parent = Players.LocalPlayer:WaitForChild("PlayerGui", 10)
+    if not gui.Parent then
+        gui.Parent = game:GetService("CoreGui")
+    end
 
     root = Widget.new("Frame", {
         Name = "Root",
@@ -2949,39 +4244,30 @@ local function buildRoot()
         ClipsDescendants = true,
         Parent = gui,
     })
-    Theme.corner(root, Theme.metric.radius + 2)
+    Theme.corner(root, Theme.metric.radius + 3)
     Theme.stroke(root, Theme.color.lineHot)
 
-    -- Gradiente de fundo: cinza quente no topo -> tinta embaixo.
-    local bg = Widget.new("Frame", {
+    local base = Widget.new("Frame", {
         Size = UDim2.fromScale(1, 1),
         BackgroundColor3 = Color3.new(1, 1, 1),
         BorderSizePixel = 0,
         ZIndex = 0,
         Parent = root,
     })
-    Theme.corner(bg, Theme.metric.radius + 2)
-    Theme.applyGradient(bg)
+    Theme.corner(base, Theme.metric.radius + 3)
+    Theme.gradientBase(base)
 
-    -- Brilho vermelho no topo: dá o "calor" da identidade sem poluir o conteúdo.
-    -- Não é uma imagem — é um gradiente radial simulado com UIGradient em ângulo.
+    -- Brilho vermelho no topo: dá calor à identidade sem poluir o conteúdo.
     local glow = Widget.new("Frame", {
-        Size = UDim2.new(1, 0, 0, 90),
-        BackgroundColor3 = Theme.color.accent,
-        BackgroundTransparency = 0.93,
+        Size = UDim2.new(1, 0, 0, 130),
+        BackgroundColor3 = Color3.new(1, 1, 1),
+        BackgroundTransparency = 0.72,
         BorderSizePixel = 0,
         ZIndex = 1,
         Parent = root,
     })
-    Theme.corner(glow, Theme.metric.radius + 2)
-    local gg = Instance.new("UIGradient")
-    gg.Rotation = 90
-    gg.Transparency = NumberSequence.new({
-        NumberSequenceKeypoint.new(0, 0.0),
-        NumberSequenceKeypoint.new(1, 1.0),
-    })
-    gg.Parent = glow
-    return root
+    Theme.corner(glow, Theme.metric.radius + 3)
+    Theme.gradientGlow(glow)
 end
 
 local function buildHeader()
@@ -2989,80 +4275,73 @@ local function buildHeader()
         Name = "Header",
         Size = UDim2.new(1, 0, 0, Theme.metric.headH),
         BackgroundColor3 = Theme.color.surfaceTop,
-        BackgroundTransparency = 0.25,
+        BackgroundTransparency = 0.28,
         BorderSizePixel = 0,
-        ZIndex = 2,
+        ZIndex = 3,
         Parent = root,
     })
     Theme.pad(head, 0, Theme.metric.pad + 2, 0)
 
-    -- marca: um losango vermelho, ecoando a geometria do AirFlow (que usa
-    -- uma imagem de logo) mas sem asset externo — nada para o Roblox censurar.
-    local mark = Widget.new("Frame", {
-        Size = UDim2.fromOffset(9, 9),
-        Position = UDim2.new(0, 0, 0.5, -4.5),
-        BackgroundColor3 = Theme.color.accent,
-        BorderSizePixel = 0,
-        Rotation = 45,
-        ZIndex = 3,
+    -- Logo pequeno: marca no canto, como um app.
+    local logo = Widget.new("ImageLabel", {
+        Name = "Logo",
+        Size = UDim2.fromOffset(46, 46),
+        Position = UDim2.new(0, 0, 0.5, -23),
+        BackgroundTransparency = 1,
+        Image = UI.LOGO,
+        ScaleType = Enum.ScaleType.Fit,
+        ZIndex = 4,
         Parent = head,
     })
-    Theme.corner(mark, 1)
+    UI.headerLogo = logo
 
-    Widget.new("TextLabel", {
-        Size = UDim2.fromOffset(160, 18),
-        Position = UDim2.new(0, 18, 0, 8),
-        BackgroundTransparency = 1,
-        Text = "AOTR",
-        TextColor3 = Theme.color.text,
-        TextSize = Theme.text.title,
-        Font = Theme.font.bold,
-        TextXAlignment = Enum.TextXAlignment.Left,
-        ZIndex = 3,
-        Parent = head,
-    })
-    Widget.new("TextLabel", {
-        Size = UDim2.fromOffset(220, 12),
-        Position = UDim2.new(0, 18, 0, 24),
-        BackgroundTransparency = 1,
-        Text = "Attack on Titan Revolution",
-        TextColor3 = Theme.color.textMute,
-        TextSize = Theme.text.tiny,
-        Font = Theme.font.regular,
-        TextXAlignment = Enum.TextXAlignment.Left,
-        ZIndex = 3,
-        Parent = head,
+    Widget.label({
+        parent = head,
+        text = "VHub",
+        position = UDim2.new(0, 54, 0, 12),
+        size = UDim2.fromOffset(120, 20),
+        textSize = Theme.text.title,
+        font = Theme.font.black,
+        zindex = 4,
     })
 
-    -- estatísticas ao vivo no cabeçalho — o detalhe que faz parecer vivo
-    local stats = Widget.new("TextLabel", {
-        Name = "Stats",
-        Size = UDim2.fromOffset(220, 14),
-        Position = UDim2.new(1, -220 - 74, 0.5, -7),
-        BackgroundTransparency = 1,
-        Text = "",
-        TextColor3 = Theme.color.textMute,
-        TextSize = Theme.text.tiny,
-        Font = Theme.font.mono,
-        TextXAlignment = Enum.TextXAlignment.Right,
-        ZIndex = 3,
-        Parent = head,
+    local subtitle = Widget.label({
+        parent = head,
+        text = "…",
+        position = UDim2.new(0, 54, 0, 32),
+        size = UDim2.fromOffset(280, 15),
+        textSize = Theme.text.tiny,
+        color = Theme.color.textMute,
+        zindex = 4,
     })
-    UI.statsLabel = stats
+    UI.headerSub = subtitle
 
-    -- botão minimizar
+    -- Estatísticas compactas no cabeçalho
+    UI.headerStats = Widget.label({
+        parent = head,
+        text = "",
+        position = UDim2.new(1, -300 - 76, 0.5, -8),
+        size = UDim2.fromOffset(300, 16),
+        textSize = Theme.text.tiny,
+        font = Theme.font.mono,
+        color = Theme.color.textMute,
+        align = Enum.TextXAlignment.Right,
+        zindex = 4,
+    })
+
+    -- Minimizar
     local min = Widget.new("TextButton", {
-        Size = UDim2.fromOffset(26, 26),
-        Position = UDim2.new(1, -60, 0.5, -13),
+        Size = UDim2.fromOffset(28, 28),
+        Position = UDim2.new(1, -64, 0.5, -14),
         BackgroundColor3 = Theme.color.surface,
         BackgroundTransparency = 1,
         Text = "—",
         TextColor3 = Theme.color.textDim,
-        TextSize = 14,
+        TextSize = 15,
         Font = Theme.font.bold,
         AutoButtonColor = false,
         BorderSizePixel = 0,
-        ZIndex = 4,
+        ZIndex = 5,
         Parent = head,
     })
     Theme.corner(min, 6)
@@ -3074,31 +4353,35 @@ local function buildHeader()
     end)
     min.MouseButton1Click:Connect(function() UI.setMinimized(not minimized) end)
 
-    -- botão fechar
+    -- Fechar
     local close = Widget.new("TextButton", {
-        Size = UDim2.fromOffset(26, 26),
-        Position = UDim2.new(1, -30, 0.5, -13),
+        Size = UDim2.fromOffset(28, 28),
+        Position = UDim2.new(1, -32, 0.5, -14),
         BackgroundColor3 = Theme.color.surface,
         BackgroundTransparency = 1,
         Text = "✕",
         TextColor3 = Theme.color.textDim,
-        TextSize = 13,
+        TextSize = 14,
         Font = Theme.font.bold,
         AutoButtonColor = false,
         BorderSizePixel = 0,
-        ZIndex = 4,
+        ZIndex = 5,
         Parent = head,
     })
     Theme.corner(close, 6)
     close.MouseEnter:Connect(function()
-        Widget.tween(close, Theme.ease.fast, { BackgroundTransparency = 0, BackgroundColor3 = Theme.color.danger, TextColor3 = Color3.new(1, 1, 1) })
+        Widget.tween(close, Theme.ease.fast, {
+            BackgroundTransparency = 0, BackgroundColor3 = Theme.color.danger,
+            TextColor3 = Color3.new(1, 1, 1) })
     end)
     close.MouseLeave:Connect(function()
-        Widget.tween(close, Theme.ease.fast, { BackgroundTransparency = 1, BackgroundColor3 = Theme.color.surface, TextColor3 = Theme.color.textDim })
+        Widget.tween(close, Theme.ease.fast, {
+            BackgroundTransparency = 1, BackgroundColor3 = Theme.color.surface,
+            TextColor3 = Theme.color.textDim })
     end)
     close.MouseButton1Click:Connect(function() UI.setVisible(false) end)
 
-    -- arrasto pela barra de título
+    -- Arrasto
     local dragging, dragStart, startPos
     head.InputBegan:Connect(function(input)
         if input.UserInputType == Enum.UserInputType.MouseButton1
@@ -3124,133 +4407,123 @@ local function buildHeader()
                 startPos.Y.Scale, startPos.Y.Offset + d.Y)
         end
     end)
-
-    return head
 end
 
 local function buildSidebar()
     sidebar = Widget.new("Frame", {
         Name = "Sidebar",
-        Size = UDim2.new(0, 132, 1, -(Theme.metric.headH + 26)),
+        Size = UDim2.new(0, Theme.metric.sidebarW, 1, -(Theme.metric.headH + 26)),
         Position = UDim2.new(0, 0, 0, Theme.metric.headH),
         BackgroundColor3 = Theme.color.void,
-        BackgroundTransparency = 0.4,
+        BackgroundTransparency = 0.42,
         BorderSizePixel = 0,
-        ZIndex = 2,
+        ZIndex = 3,
         Parent = root,
     })
     Widget.new("UIListLayout", {
-        Padding = UDim.new(0, 3),
+        Padding = UDim.new(0, 4),
         SortOrder = Enum.SortOrder.LayoutOrder,
         Parent = sidebar,
     })
-    Theme.pad(sidebar, 0, 8, 8)
+    Theme.pad(sidebar, 0, 9, 9)
 
-    for i, key in ipairs({ "combate", "recursos", "visual", "sistema" }) do
-        local def = FEATURES[key]
+    for i, def in ipairs(TABS) do
         local btn = Widget.new("TextButton", {
-            Name = key,
-            Size = UDim2.new(1, 0, 0, 32),
+            Name = def.key,
+            Size = UDim2.new(1, 0, 0, 36),
             BackgroundColor3 = Theme.color.surface,
             BackgroundTransparency = 1,
             Text = "",
             AutoButtonColor = false,
             BorderSizePixel = 0,
             LayoutOrder = i,
-            ZIndex = 3,
+            ZIndex = 4,
             Parent = sidebar,
         })
         Theme.corner(btn, Theme.metric.radiusSm)
 
         local bar = Widget.new("Frame", {
-            Name = "Bar",
-            Size = UDim2.new(0, 2, 0, 0),
+            Size = UDim2.new(0, 3, 0, 0),
             Position = UDim2.new(0, 0, 0.5, 0),
             AnchorPoint = Vector2.new(0, 0.5),
             BackgroundColor3 = Theme.color.accent,
             BorderSizePixel = 0,
-            ZIndex = 5,
+            ZIndex = 6,
             Parent = btn,
         })
-        Theme.corner(bar, 1)
+        Theme.corner(bar, 2)
 
-        local ic = Widget.new("TextLabel", {
-            Size = UDim2.fromOffset(20, 20),
-            Position = UDim2.new(0, 10, 0.5, -10),
-            BackgroundTransparency = 1,
-            Text = def.icon,
-            TextColor3 = Theme.color.textMute,
-            TextSize = 13,
-            Font = Theme.font.bold,
-            ZIndex = 4,
-            Parent = btn,
-        })
-        local lb = Widget.new("TextLabel", {
-            Size = UDim2.new(1, -38, 1, 0),
-            Position = UDim2.new(0, 32, 0, 0),
-            BackgroundTransparency = 1,
-            Text = def.label,
-            TextColor3 = Theme.color.textMute,
-            TextSize = Theme.text.label,
-            Font = Theme.font.medium,
-            TextXAlignment = Enum.TextXAlignment.Left,
-            ZIndex = 4,
-            Parent = btn,
+        local ic = Widget.label({
+            parent = btn,
+            text = def.icon,
+            position = UDim2.new(0, 12, 0.5, -10),
+            size = UDim2.fromOffset(20, 20),
+            textSize = 15,
+            color = Theme.color.textMute,
+            zindex = 5,
         })
 
-        tabs[key] = { btn = btn, bar = bar, icon = ic, label = lb }
+        local lb = Widget.label({
+            parent = btn,
+            text = def.label,
+            position = UDim2.new(0, 38, 0, 0),
+            size = UDim2.new(1, -44, 1, 0),
+            textSize = Theme.text.label,
+            font = Theme.font.medium,
+            color = Theme.color.textMute,
+            zindex = 5,
+        })
+
+        tabs[def.key] = { btn = btn, bar = bar, icon = ic, label = lb }
 
         btn.MouseEnter:Connect(function()
-            if activeTab ~= key then
-                Widget.tween(btn, Theme.ease.fast, { BackgroundTransparency = 0.4 })
+            if activeTab ~= def.key then
+                Widget.tween(btn, Theme.ease.fast, { BackgroundTransparency = 0.35 })
                 Widget.tween(lb, Theme.ease.fast, { TextColor3 = Theme.color.textDim })
             end
         end)
         btn.MouseLeave:Connect(function()
-            if activeTab ~= key then
+            if activeTab ~= def.key then
                 Widget.tween(btn, Theme.ease.fast, { BackgroundTransparency = 1 })
                 Widget.tween(lb, Theme.ease.fast, { TextColor3 = Theme.color.textMute })
             end
         end)
-        btn.MouseButton1Click:Connect(function() UI.selectTab(key) end)
+        btn.MouseButton1Click:Connect(function() UI.selectTab(def.key) end)
     end
-    return sidebar
 end
 
 local function buildContent()
     content = Widget.new("Frame", {
         Name = "Content",
-        Size = UDim2.new(1, -132 - 1, 1, -(Theme.metric.headH + 26)),
-        Position = UDim2.new(0, 132, 0, Theme.metric.headH),
+        Size = UDim2.new(1, -Theme.metric.sidebarW - 1, 1, -(Theme.metric.headH + 26)),
+        Position = UDim2.new(0, Theme.metric.sidebarW, 0, Theme.metric.headH),
         BackgroundTransparency = 1,
         ClipsDescendants = true,
-        ZIndex = 2,
+        ZIndex = 3,
         Parent = root,
     })
 
-    local scroll = Widget.new("ScrollingFrame", {
+    UI.scroll = Widget.new("ScrollingFrame", {
         Name = "Scroll",
         Size = UDim2.fromScale(1, 1),
         BackgroundTransparency = 1,
         BorderSizePixel = 0,
         ScrollBarThickness = Theme.metric.scrollW,
         ScrollBarImageColor3 = Theme.color.line,
-        ScrollBarImageTransparency = 0.3,
+        ScrollBarImageTransparency = 0.25,
         CanvasSize = UDim2.new(),
         AutomaticCanvasSize = Enum.AutomaticSize.Y,
         ScrollingDirection = Enum.ScrollingDirection.Y,
-        ZIndex = 2,
+        ZIndex = 3,
         Parent = content,
     })
-    Theme.pad(scroll, 0, Theme.metric.pad + 2, Theme.metric.pad)
+    Theme.pad(UI.scroll, 0, Theme.metric.pad + 2, Theme.metric.pad)
 
     Widget.new("UIListLayout", {
-        Padding = UDim.new(0, 10),
+        Padding = UDim.new(0, 12),
         SortOrder = Enum.SortOrder.LayoutOrder,
-        Parent = scroll,
+        Parent = UI.scroll,
     })
-    UI.scroll = scroll
-    return scroll
 end
 
 local function buildStatusBar()
@@ -3261,57 +4534,121 @@ local function buildStatusBar()
         BackgroundColor3 = Theme.color.surfaceTop,
         BackgroundTransparency = 0.35,
         BorderSizePixel = 0,
-        ZIndex = 3,
+        ZIndex = 4,
         Parent = root,
     })
     Theme.pad(statusBar, 0, Theme.metric.pad + 2, 0)
 
     local dot = Widget.new("Frame", {
-        Size = UDim2.fromOffset(6, 6),
-        Position = UDim2.new(0, 0, 0.5, -3),
+        Size = UDim2.fromOffset(7, 7),
+        Position = UDim2.new(0, 0, 0.5, -3.5),
         BackgroundColor3 = Theme.color.ok,
         BorderSizePixel = 0,
-        ZIndex = 4,
+        ZIndex = 5,
         Parent = statusBar,
     })
-    Theme.corner(dot, 3)
+    Theme.corner(dot, 4)
     UI.statusDot = dot
 
-    local txt = Widget.new("TextLabel", {
-        Size = UDim2.new(1, -120, 1, 0),
-        Position = UDim2.new(0, 12, 0, 0),
-        BackgroundTransparency = 1,
-        Text = "Pronto",
-        TextColor3 = Theme.color.textMute,
-        TextSize = Theme.text.tiny,
-        Font = Theme.font.regular,
-        TextXAlignment = Enum.TextXAlignment.Left,
-        ZIndex = 4,
-        Parent = statusBar,
+    UI.statusText = Widget.label({
+        parent = statusBar,
+        text = "Pronto",
+        position = UDim2.new(0, 14, 0, 0),
+        size = UDim2.new(1, -160, 1, 0),
+        textSize = Theme.text.tiny,
+        color = Theme.color.textMute,
+        zindex = 5,
     })
-    UI.statusText = txt
 
-    Widget.new("TextLabel", {
-        Size = UDim2.fromOffset(110, 14),
-        Position = UDim2.new(1, -110, 0.5, -7),
-        BackgroundTransparency = 1,
-        Text = "RightCtrl · ocultar",
-        TextColor3 = Theme.color.textMute,
-        TextSize = Theme.text.tiny,
-        Font = Theme.font.mono,
-        TextXAlignment = Enum.TextXAlignment.Right,
-        ZIndex = 4,
-        Parent = statusBar,
+    Widget.label({
+        parent = statusBar,
+        text = "RightCtrl · ocultar",
+        position = UDim2.new(1, -140, 0, 0),
+        size = UDim2.fromOffset(140, 26),
+        textSize = Theme.text.tiny,
+        font = Theme.font.mono,
+        color = Theme.color.textMute,
+        align = Enum.TextXAlignment.Right,
+        zindex = 5,
     })
-    return statusBar
 end
 
--- ── Página (conteúdo de uma aba) ─────────────────────────────────────────────
+-- ── Construtores de linha ────────────────────────────────────────────────────
+-- Encurtam a declaração das páginas e garantem que todo controle novo entre
+-- registrado em UI.controls para o rebuild.
 
-local function buildPage(key)
-    local def = FEATURES[key]
+local function addToggle(section, order, flag, text, sub, onChange)
+    local w = Widget.toggle({
+        parent = section.body,
+        text = text,
+        sub = sub,
+        default = State.flags[flag],
+        size = UDim2.new(1, 0, 0, sub and 42 or 34),
+        onChange = function(v)
+            State.set(flag, v)
+            if onChange then onChange(v) end
+        end,
+    })
+    w.instance.LayoutOrder = order
+    UI.controls[flag] = w
+    return w
+end
+
+local function addSlider(section, order, key, text, min, max, suffix, decimals, onChange)
+    local w = Widget.slider({
+        parent = section.body,
+        text = text,
+        min = min, max = max,
+        default = State.config[key],
+        suffix = suffix, decimals = decimals,
+        onChange = function(v)
+            State.config[key] = v
+            if onChange then onChange(v) end
+        end,
+    })
+    w.instance.LayoutOrder = order
+    UI.controls[key] = w
+    return w
+end
+
+local function addDropdown(section, order, key, text, options, onChange)
+    local w = Widget.dropdown({
+        parent = section.body,
+        text = text,
+        options = options,
+        default = State.config[key],
+        onChange = function(v)
+            State.config[key] = v
+            if onChange then onChange(v) end
+        end,
+    })
+    w.instance.LayoutOrder = order
+    UI.controls[key] = w
+    return w
+end
+
+local function addButton(section, order, text, variant, onClick)
+    local w = Widget.button({
+        parent = section.body,
+        text = text,
+        variant = variant or "ghost",
+        size = UDim2.new(1, 0, 0, 32),
+        onClick = onClick,
+    })
+    w.instance.LayoutOrder = order
+    return w
+end
+
+local function addInfo(section, order, text, danger)
+    local w = Widget.info({ parent = section.body, text = text, order = order, danger = danger })
+    return w
+end
+
+-- ── Página: Home ─────────────────────────────────────────────────────────────
+
+local function buildHome()
     local page = Widget.new("Frame", {
-        Name = key,
+        Name = "home",
         Size = UDim2.new(1, 0, 0, 0),
         AutomaticSize = Enum.AutomaticSize.Y,
         BackgroundTransparency = 1,
@@ -3319,97 +4656,424 @@ local function buildPage(key)
         Parent = UI.scroll,
     })
     Widget.new("UIListLayout", {
-        Padding = UDim.new(0, 10),
+        Padding = UDim.new(0, 12),
         SortOrder = Enum.SortOrder.LayoutOrder,
         Parent = page,
     })
 
-    local section = Widget.section({ parent = page, text = def.label })
-    section.instance.LayoutOrder = 1
+    -- ── Cartão de identidade
+    local id = Widget.new("Frame", {
+        Size = UDim2.new(1, 0, 0, 108),
+        BackgroundColor3 = Theme.color.card,
+        BorderSizePixel = 0,
+        LayoutOrder = 1,
+        Parent = page,
+    })
+    Theme.corner(id, Theme.metric.radius)
+    Theme.stroke(id, Theme.color.lineSoft)
+    Theme.pad(id, 0, 16, 14)
 
-    UI.controls = UI.controls or {}
+    -- gradiente sutil no cartão, para diferenciá-lo das seções abaixo
+    local idBg = Widget.new("Frame", {
+        Size = UDim2.fromScale(1, 1),
+        BackgroundColor3 = Color3.new(1, 1, 1),
+        BackgroundTransparency = 0.86,
+        BorderSizePixel = 0,
+        ZIndex = 2,
+        Parent = id,
+    })
+    Theme.corner(idBg, Theme.metric.radius)
+    Theme.gradientGlow(idBg)
 
-    for i, item in ipairs(def.items) do
-        local w
-        if item.type == "toggle" then
-            w = Widget.toggle({
-                parent = section.body,
-                text = item.text,
-                sub = item.sub,
-                default = State.flags[item.flag],
-                onChange = function(v) State.set(item.flag, v) end,
-                size = UDim2.new(1, 0, 0, item.sub and 40 or 32),
-            })
-            w.instance.LayoutOrder = i
-            UI.controls[item.flag] = w
+    local av = Widget.avatar({ parent = id, image = "", size = Theme.metric.avatar, position = UDim2.new(0, 0, 0, 8) })
+    av.instance.ZIndex = 4
+    av.instance.Position = UDim2.new(0, 0, 0.5, -Theme.metric.avatar / 2)
+    UI.avatar = av
 
-        elseif item.type == "slider" then
-            w = Widget.slider({
-                parent = section.body,
-                text = item.text,
-                min = item.min, max = item.max,
-                default = State.config[item.flag],
-                suffix = item.suffix, decimals = item.decimals,
-                onChange = function(v) State.config[item.flag] = v end,
-            })
-            w.instance.LayoutOrder = i
-            UI.controls[item.flag] = w
+    UI.heroName = Widget.label({
+        parent = id,
+        text = "Carregando…",
+        position = UDim2.new(0, Theme.metric.avatar + 16, 0, 20),
+        size = UDim2.new(1, -(Theme.metric.avatar + 30), 0, 32),
+        textSize = Theme.text.heroName,
+        font = Theme.font.black,
+        zindex = 4,
+    })
 
-        elseif item.type == "dropdown" then
-            w = Widget.dropdown({
-                parent = section.body,
-                text = item.text,
-                options = item.options,
-                default = State.config[item.flag],
-                onChange = function(v) State.config[item.flag] = v end,
-            })
-            w.instance.LayoutOrder = i
-            UI.controls[item.flag] = w
+    UI.heroSub = Widget.label({
+        parent = id,
+        text = "",
+        position = UDim2.new(0, Theme.metric.avatar + 17, 0, 52),
+        size = UDim2.new(1, -(Theme.metric.avatar + 30), 0, 18),
+        textSize = Theme.text.heroSub,
+        color = Theme.color.textMute,
+        zindex = 4,
+    })
 
-        elseif item.type == "button" then
-            w = Widget.button({
-                parent = section.body,
-                text = item.text,
-                variant = item.variant or "ghost",
-                size = UDim2.new(1, 0, 0, 30),
-                onClick = item.onClick,
-            })
-            w.instance.LayoutOrder = i
+    UI.heroPlace = Widget.label({
+        parent = id,
+        text = "",
+        position = UDim2.new(0, Theme.metric.avatar + 17, 0, 72),
+        size = UDim2.new(1, -(Theme.metric.avatar + 30), 0, 16),
+        textSize = Theme.text.tiny,
+        color = Theme.color.accentHi,
+        font = Theme.font.medium,
+        zindex = 4,
+    })
 
-        elseif item.type == "divider" then
-            local d = Widget.divider(section.body)
-            d.LayoutOrder = i
+    -- ── Estatísticas ao vivo
+    local statsSec = Widget.section({ parent = page, text = "Ao vivo" })
+    statsSec.instance.LayoutOrder = 2
 
-        elseif item.type == "info" then
-            local box = Widget.new("Frame", {
-                Size = UDim2.new(1, 0, 0, 0),
-                AutomaticSize = Enum.AutomaticSize.Y,
-                BackgroundColor3 = Theme.color.accentGhost,
-                BorderSizePixel = 0,
-                LayoutOrder = i,
-                Parent = section.body,
-            })
-            Theme.corner(box, Theme.metric.radiusSm)
-            Theme.stroke(box, Theme.color.lineSoft)
-            Theme.pad(box, 0, 10, 7)
-            Widget.new("TextLabel", {
-                Size = UDim2.new(1, 0, 0, 0),
-                AutomaticSize = Enum.AutomaticSize.Y,
-                BackgroundTransparency = 1,
-                Text = item.text,
-                TextColor3 = Theme.color.textDim,
-                TextSize = Theme.text.sub,
-                Font = Theme.font.regular,
-                TextWrapped = true,
-                TextXAlignment = Enum.TextXAlignment.Left,
-                TextYAlignment = Enum.TextYAlignment.Top,
-                Parent = box,
-            })
-        end
+    local grid = Widget.new("Frame", {
+        Size = UDim2.new(1, 0, 0, Theme.metric.statCardH),
+        BackgroundTransparency = 1,
+        Parent = statsSec.body,
+    })
+    Widget.new("UIGridLayout", {
+        CellSize = UDim2.new(0, 143, 0, Theme.metric.statCardH),
+        CellPadding = UDim2.new(0, 8, 0, 0),
+        SortOrder = Enum.SortOrder.LayoutOrder,
+        Parent = grid,
+    })
+
+    local defs = {
+        { key = "players",  caption = "Jogadores" },
+        { key = "friends",  caption = "Amigos aqui" },
+        { key = "session",  caption = "Na sessão" },
+        { key = "fps",      caption = "FPS" },
+        { key = "ping",     caption = "Ping" },
+    }
+    for i, d in ipairs(defs) do
+        local card = Widget.statCard({
+            parent = grid,
+            caption = d.caption,
+            value = "—",
+        })
+        card.instance.LayoutOrder = i
+        statCards[d.key] = card
     end
 
-    pages[key] = { frame = page, section = section, def = def }
-    return page
+    -- ── Jogo atual
+    local gameSec = Widget.section({ parent = page, text = "Jogo" })
+    gameSec.instance.LayoutOrder = 3
+
+    local gameCard = Widget.new("Frame", {
+        Size = UDim2.new(1, 0, 0, 76),
+        BackgroundColor3 = Theme.color.card,
+        BorderSizePixel = 0,
+        Parent = gameSec.body,
+    })
+    Theme.corner(gameCard, Theme.metric.radius)
+    Theme.stroke(gameCard, Theme.color.lineSoft)
+    Theme.pad(gameCard, 0, 14, 12)
+
+    UI.gameLogo = Widget.new("ImageLabel", {
+        Size = UDim2.fromOffset(52, 52),
+        Position = UDim2.new(0, 0, 0.5, -26),
+        BackgroundTransparency = 1,
+        Image = UI.LOGO,
+        ScaleType = Enum.ScaleType.Fit,
+        Parent = gameCard,
+    })
+
+    UI.gameName = Widget.label({
+        parent = gameCard,
+        text = "Attack on Titan Revolution",
+        position = UDim2.new(0, 64, 0, 6),
+        size = UDim2.new(1, -74, 0, 22),
+        textSize = 18,
+        font = Theme.font.bold,
+    })
+
+    UI.gameMeta = Widget.label({
+        parent = gameCard,
+        text = "",
+        position = UDim2.new(0, 64, 0, 30),
+        size = UDim2.new(1, -74, 0, 16),
+        textSize = Theme.text.sub,
+        color = Theme.color.textMute,
+    })
+
+    UI.gamePlace = Widget.label({
+        parent = gameCard,
+        text = "",
+        position = UDim2.new(0, 64, 0, 46),
+        size = UDim2.new(1, -74, 0, 15),
+        textSize = Theme.text.tiny,
+        color = Theme.color.accentHi,
+        font = Theme.font.mono,
+    })
+
+    -- ── Comunidade
+    local commSec = Widget.section({ parent = page, text = "Comunidade" })
+    commSec.instance.LayoutOrder = 4
+    addInfo(commSec, 1,
+        "Comunidade do VHub em breve. Aqui vai ficar o convite, o status do serviço e as novidades.")
+
+    pages.home = { frame = page }
+end
+
+-- ── Página: Missões ──────────────────────────────────────────────────────────
+
+local function buildMissoes()
+    local page = Widget.new("Frame", {
+        Name = "missoes",
+        Size = UDim2.new(1, 0, 0, 0),
+        AutomaticSize = Enum.AutomaticSize.Y,
+        BackgroundTransparency = 1,
+        Visible = false,
+        Parent = UI.scroll,
+    })
+    Widget.new("UIListLayout", {
+        Padding = UDim.new(0, 12),
+        SortOrder = Enum.SortOrder.LayoutOrder,
+        Parent = page,
+    })
+
+    -- ── Titãs
+    local titas = Widget.section({ parent = page, text = "Titãs" })
+    titas.instance.LayoutOrder = 1
+    addToggle(titas, 1, "autoKill", "Matar Titãs automaticamente",
+        "Ataca sozinho os Titãs no alcance")
+    addToggle(titas, 2, "killNape", "Mirar na nuca",
+        "Registra o golpe na hitbox crítica")
+    addToggle(titas, 3, "autoReload", "Recarregar lâminas automaticamente",
+        "Troca a lâmina quando quebra")
+    addToggle(titas, 4, "autoEscape", "Escapar de agarrões automaticamente",
+        "Sai do agarrão assim que o Titã pega")
+    addToggle(titas, 5, "autoTPToTitan", "Teleportar ao Titã mais próximo")
+    addSlider(titas, 6, "killRange", "Alcance do ataque", 5, 150, " studs")
+    addSlider(titas, 7, "strikeDelay", "Intervalo entre golpes", 0.05, 1, "s", 2)
+    addInfo(titas, 8,
+        "O alcance real da lâmina é curto. Valores altos dependem da magnitude estendida em Config.")
+
+    -- ── Movimento
+    local mov = Widget.section({ parent = page, text = "Movimento" })
+    mov.instance.LayoutOrder = 2
+    addToggle(mov, 1, "safeSpot", "Local seguro",
+        "Recua quando um Titã chega perto de você")
+    addToggle(mov, 2, "tpObjective", "Teleportar ao objetivo",
+        "Vai até o alvo da missão")
+    addSlider(mov, 3, "safeRange", "Distância de alerta", 15, 120, " studs")
+    addSlider(mov, 4, "safeDistance", "Recuo", 10, 80, " studs")
+    addInfo(mov, 5,
+        "O jogo não tem zona segura própria — este recuo é posicional, feito pelo script.")
+
+    -- ── Nuca
+    local nuca = Widget.section({ parent = page, text = "Hitbox da Nuca" })
+    nuca.instance.LayoutOrder = 3
+    addToggle(nuca, 1, "napeExpander", "Expansor de hitbox",
+        "Aumenta a nuca para facilitar o acerto")
+    addToggle(nuca, 2, "showNape", "Mostrar a nuca",
+        "Deixa visível em vermelho")
+    addSlider(nuca, 3, "napeScale", "Tamanho", 0, 2, "x", 1)
+    addSlider(nuca, 4, "napeTransparency", "Transparência", 0, 1, "", 2)
+    addInfo(nuca, 5,
+        "Tamanho de fábrica da nuca: 15 × 9 × 11. O multiplicador é aplicado sobre ele e restaurado ao desligar.")
+
+    -- ── Pós-missão
+    local pos = Widget.section({ parent = page, text = "Painel de Pós-Missão" })
+    pos.instance.LayoutOrder = 4
+    addToggle(pos, 1, "autoRetry", "Tentar novamente automático",
+        "Reinicia a missão assim que acaba")
+    addToggle(pos, 2, "autoReturnLobby", "Retornar ao saguão automático")
+    addToggle(pos, 3, "openFreeChest", "Abrir baú de raid grátis",
+        "Aciona o botão OPEN do baú gratuito")
+    addToggle(pos, 4, "openPremiumChest", "Abrir baú premium",
+        "Gasta recurso da conta — deixe desligado se não tiver certeza")
+    addInfo(pos, 5,
+        "O baú é aberto por automação de interface: o jogo não expõe função de rede para isso.",
+        true)
+
+    -- ── Segurança
+    local saf = Widget.section({ parent = page, text = "Segurança" })
+    saf.instance.LayoutOrder = 5
+    addToggle(saf, 1, "safeFarm", "Modo Seguro",
+        "Segura a missão pelo tempo mínimo, evitando detecção por velocidade")
+    addSlider(saf, 2, "safeTime", "Tempo mínimo", 0, 90, "s")
+    addInfo(saf, 3,
+        "O gatilho de shadow ban relatado é concluir missões rápido demais. Com o Modo Seguro ligado, o script não mata o último Titã antes do tempo.")
+
+    pages.missoes = { frame = page }
+end
+
+-- ── Página: Lobby ────────────────────────────────────────────────────────────
+
+local function buildLobby()
+    local page = Widget.new("Frame", {
+        Name = "lobby",
+        Size = UDim2.new(1, 0, 0, 0),
+        AutomaticSize = Enum.AutomaticSize.Y,
+        BackgroundTransparency = 1,
+        Visible = false,
+        Parent = UI.scroll,
+    })
+    Widget.new("UIListLayout", {
+        Padding = UDim.new(0, 12),
+        SortOrder = Enum.SortOrder.LayoutOrder,
+        Parent = page,
+    })
+
+    -- ── Missões
+    local mis = Widget.section({ parent = page, text = "Missões" })
+    mis.instance.LayoutOrder = 1
+    addToggle(mis, 1, "autoStart", "Iniciar automático",
+        "Cria a sala com as opções abaixo e entra")
+    addToggle(mis, 2, "preferBoosted", "Preferir mapa com bônus",
+        "Escolhe o mapa com bônus ativo quando houver")
+    addDropdown(mis, 3, "missionType", "Modo", { "Missions", "Raids", "Waves" })
+    addDropdown(mis, 4, "mapName", "Mapa", {
+        "Automático", "Shiganshina", "Trost", "Outskirts", "Forest",
+        "Utgard", "Docks", "Stohess", "Chapel",
+    })
+    addDropdown(mis, 5, "objective", "Objetivo", { "Skirmish", "Waves" })
+    addDropdown(mis, 6, "difficulty", "Dificuldade",
+        { "Easy", "Normal", "Hard", "Severe", "Aberrant" })
+    addDropdown(mis, 7, "raid", "Titã (modo Raids)",
+        { "Attack Titan", "Armored Titan", "Female Titan", "Colossal Titan" })
+
+    local modChips = Widget.chips({
+        parent = mis.body,
+        text = "Modificadores",
+        options = {
+            "No Perks", "No Skills", "No Memories", "Nightmare", "Oddball",
+            "Injury Prone", "Chronic Injuries", "Fog", "Glass Cannon",
+            "Time Trial", "Boring", "Simple",
+        },
+        default = State.config.modifiers,
+        onChange = function(list) State.config.modifiers = list end,
+    })
+    modChips.instance.LayoutOrder = 8
+    UI.controls.modifiers = modChips
+
+    addButton(mis, 9, "Criar e iniciar agora", "solid", function()
+        if not Lobby_ref then
+            UI.notify("Lobby", "Módulo de lobby ainda não carregou.", 4)
+            return
+        end
+        Lobby_ref.leaveMission()
+        task.spawn(function()
+            task.wait(0.6)
+            Lobby_ref.createMission()
+            task.wait(0.6)
+            Lobby_ref.modifyModifiers()
+            task.wait(0.6)
+            Lobby_ref.startMission()
+        end)
+    end)
+
+    addInfo(mis, 10,
+        "Alguns modos restringem as opções: Waves só existe em Trost na dificuldade Easy, e o Colossal Titan exige Aberrant com mínimo de 3 jogadores.")
+
+    -- ── Melhorias
+    local mel = Widget.section({ parent = page, text = "Melhorias" })
+    mel.instance.LayoutOrder = 2
+    addToggle(mel, 1, "autoUpgrade", "Melhorar atributos automaticamente",
+        "Gasta os pontos disponíveis")
+    addToggle(mel, 2, "autoSkills", "Desbloquear árvore de habilidades",
+        "Sobe as três trilhas automaticamente")
+    addDropdown(mel, 3, "skillLeft", "Trilha esquerda", { "Regen VI", "Injury III" })
+    addDropdown(mel, 4, "skillMiddle", "Trilha central", { "Damage V", "Crit Damage V" })
+    addDropdown(mel, 5, "skillRight", "Trilha direita", { "Tank VIII", "Health XI" })
+
+    pages.lobby = { frame = page }
+end
+
+-- ── Página: Visual ───────────────────────────────────────────────────────────
+
+local function buildVisual()
+    local page = Widget.new("Frame", {
+        Name = "visual",
+        Size = UDim2.new(1, 0, 0, 0),
+        AutomaticSize = Enum.AutomaticSize.Y,
+        BackgroundTransparency = 1,
+        Visible = false,
+        Parent = UI.scroll,
+    })
+    Widget.new("UIListLayout", {
+        Padding = UDim.new(0, 12),
+        SortOrder = Enum.SortOrder.LayoutOrder,
+        Parent = page,
+    })
+
+    local esp = Widget.section({ parent = page, text = "Titan ESP" })
+    esp.instance.LayoutOrder = 1
+    addToggle(esp, 1, "esp", "Ativar ESP", "Mostra os Titãs através das paredes")
+    addToggle(esp, 2, "espBox", "Caixa")
+    addToggle(esp, 3, "espLine", "Linha de rastreio")
+    addToggle(esp, 4, "espText", "Nome e distância")
+    addToggle(esp, 5, "espHealth", "Barra de vida")
+    addToggle(esp, 6, "espNape", "Marcar a nuca")
+    addToggle(esp, 7, "espBossOnly", "Somente chefes", "Esconde os Titãs puros")
+    addDropdown(esp, 8, "espColor", "Cor", {
+        "Vermelho", "Branco", "Verde", "Azul", "Amarelo", "Rosa", "Ciano" })
+    addSlider(esp, 9, "espMaxDist", "Distância máxima", 100, 2000, " studs")
+    addSlider(esp, 10, "espThickness", "Espessura", 1, 4, "", 1)
+
+    pages.visual = { frame = page }
+end
+
+-- ── Página: Config ───────────────────────────────────────────────────────────
+
+local function buildConfig()
+    local page = Widget.new("Frame", {
+        Name = "config",
+        Size = UDim2.new(1, 0, 0, 0),
+        AutomaticSize = Enum.AutomaticSize.Y,
+        BackgroundTransparency = 1,
+        Visible = false,
+        Parent = UI.scroll,
+    })
+    Widget.new("UIListLayout", {
+        Padding = UDim.new(0, 12),
+        SortOrder = Enum.SortOrder.LayoutOrder,
+        Parent = page,
+    })
+
+    local sis = Widget.section({ parent = page, text = "Sistema" })
+    sis.instance.LayoutOrder = 1
+    addToggle(sis, 1, "antiAfk", "Anti-AFK", "Impede a desconexão por inatividade")
+    addToggle(sis, 2, "watermark", "Marca d'água")
+    addToggle(sis, 3, "notifications", "Notificações")
+
+    local av = Widget.section({ parent = page, text = "Avançado" })
+    av.instance.LayoutOrder = 2
+    addSlider(av, 1, "hitMagnitude", "Magnitude do acerto", 5, 250, "", 0)
+    addSlider(av, 2, "hitOffset", "Offset do acerto", 0, 100, "", 0)
+    addInfo(av, 3,
+        "A magnitude declara a distância do golpe em studs. O padrão 12 é o comprimento aproximado da lâmina. Valores acima de 150 são fisicamente impossíveis e o sinal mais fácil do servidor auditar.",
+        true)
+
+    local dados = Widget.section({ parent = page, text = "Dados" })
+    dados.instance.LayoutOrder = 3
+    addButton(dados, 1, "Salvar configuração", "ghost", function()
+        if State.save() then UI.notify("Configuração", "Salvo com sucesso.")
+        else UI.notify("Configuração", "Seu executor não permite salvar arquivos.", 4) end
+    end)
+    addButton(dados, 2, "Carregar configuração", "ghost", function()
+        if State.load() then
+            UI.rebuild()
+            UI.notify("Configuração", "Carregada.")
+        else
+            UI.notify("Configuração", "Nenhum arquivo encontrado.", 4)
+        end
+    end)
+    addButton(dados, 3, "Diagnóstico do jogo", "solid", function() UI.showDiagnostic() end)
+    addButton(dados, 4, "Checar marcação da conta", "danger", function() UI.checkFlag() end)
+
+    local sobre = Widget.section({ parent = page, text = "Sobre" })
+    sobre.instance.LayoutOrder = 4
+    -- game.GameId pode faltar em ambientes restritos; formatar com nil
+    -- derrubaria a construção inteira da página.
+    addInfo(sobre, 1,
+        ("VHub v%s · Attack on Titan Revolution\nPlaceId %s · universo %s\nExecutor: %s"):format(
+            tostring(UI.VERSION or "2.0.0"),
+            tostring(game.PlaceId),
+            tostring(game.GameId or "?"),
+            tostring(Util.executorName())))
+
+    pages.config = { frame = page }
 end
 
 -- ── Notificações ─────────────────────────────────────────────────────────────
@@ -3421,65 +5085,65 @@ function UI.notify(title, text, duration)
     duration = duration or 3
 
     local card = Widget.new("Frame", {
-        Size = UDim2.fromOffset(250, 0),
+        Size = UDim2.fromOffset(280, 0),
         AutomaticSize = Enum.AutomaticSize.Y,
         BackgroundColor3 = Theme.color.surfaceTop,
         BorderSizePixel = 0,
-        ZIndex = 50,
+        ZIndex = 60,
         Parent = toastHolder,
     })
     Theme.corner(card, Theme.metric.radiusSm)
     Theme.stroke(card, Theme.color.lineHot)
-    Theme.pad(card, 0, 10, 8)
+    Theme.pad(card, 0, 12, 9)
+
+    local accent = Widget.new("Frame", {
+        Size = UDim2.new(0, 3, 1, 0),
+        BackgroundColor3 = Theme.color.accent,
+        BorderSizePixel = 0,
+        ZIndex = 61,
+        Parent = card,
+    })
+    Theme.corner(accent, 2)
 
     local stack = Widget.new("Frame", {
-        Size = UDim2.new(1, 0, 0, 0),
+        Size = UDim2.new(1, -8, 0, 0),
+        Position = UDim2.new(0, 8, 0, 0),
         AutomaticSize = Enum.AutomaticSize.Y,
         BackgroundTransparency = 1,
         Parent = card,
     })
     Widget.new("UIListLayout", { Padding = UDim.new(0, 3), Parent = stack })
 
-    Widget.new("TextLabel", {
-        Size = UDim2.new(1, 0, 0, 14),
-        BackgroundTransparency = 1,
-        Text = title,
-        TextColor3 = Theme.color.accentHi,
-        TextSize = Theme.text.label,
-        Font = Theme.font.bold,
-        TextXAlignment = Enum.TextXAlignment.Left,
-        Parent = stack,
+    Widget.label({
+        parent = stack, text = title,
+        size = UDim2.new(1, 0, 0, 15),
+        textSize = Theme.text.label, font = Theme.font.bold,
+        color = Theme.color.accentHi,
     })
-    Widget.new("TextLabel", {
-        Size = UDim2.new(1, 0, 0, 0),
+    Widget.label({
+        parent = stack, text = text,
+        size = UDim2.new(1, 0, 0, 0),
         AutomaticSize = Enum.AutomaticSize.Y,
-        BackgroundTransparency = 1,
-        Text = text,
-        TextColor3 = Theme.color.textDim,
-        TextSize = Theme.text.sub,
-        Font = Theme.font.regular,
-        TextWrapped = true,
-        TextXAlignment = Enum.TextXAlignment.Left,
-        Parent = stack,
+        textSize = Theme.text.sub, color = Theme.color.textDim,
+        wrapped = true, valign = Enum.TextYAlignment.Top,
     })
 
-    -- barra de vida da notificação: comunica a duração sem número
     local life = Widget.new("Frame", {
         Size = UDim2.new(1, 0, 0, 2),
         Position = UDim2.new(0, 0, 1, -2),
         BackgroundColor3 = Theme.color.accent,
         BorderSizePixel = 0,
-        ZIndex = 51,
+        ZIndex = 61,
         Parent = card,
     })
 
-    card.Position = UDim2.new(1, 20, 1, 0)
-    Widget.tween(card, Theme.ease.out, { Position = UDim2.new(1, -262, 1, -8 - #toasts * 62) })
+    card.Position = UDim2.new(1, 24, 1, 0)
+    Widget.tween(card, Theme.ease.out, { Position = UDim2.new(1, -292, 1, -10 - #toasts * 68) })
     Widget.tween(life, TweenInfo.new(duration, Enum.EasingStyle.Linear), { Size = UDim2.new(0, 0, 0, 2) })
 
     table.insert(toasts, card)
     task.delay(duration, function()
-        Widget.tween(card, Theme.ease.fast, { Position = UDim2.new(1, 20, 1, 0) })
+        Widget.tween(card, Theme.ease.fast, { Position = UDim2.new(1, 24, 1, 0) })
         task.wait(0.15)
         for i, c in ipairs(toasts) do if c == card then table.remove(toasts, i) break end end
         card:Destroy()
@@ -3490,62 +5154,59 @@ Util._onNotify = UI.notify
 
 -- ── Diagnóstico ──────────────────────────────────────────────────────────────
 
+local PLACE_NAMES = {
+    principal = "Menu principal",
+    lobby = "Lobby",
+    campo = "Campo de missão",
+    desconhecido = "Desconhecido",
+}
+
 function UI.showDiagnostic()
     local r = Game.diagnose()
-    local placeNames = {
-        principal = "Menu principal",
-        lobby = "Lobby / cidade",
-        campo = "Campo de missão",
-        desconhecido = "Desconhecido",
-    }
-
     local lines = {
-        ("Lugar: %s (%d)"):format(placeNames[r.placeKind] or "?", r.placeId),
+        ("Lugar: %s (%s)"):format(PLACE_NAMES[r.placeKind] or "?", tostring(r.placeId)),
         ("Universo: %s"):format(r.isAOTR and "AOTR confirmado" or "NÃO é o AOTR"),
-        ("Remotes GET/POST: %s"):format(r.remotesFound and "ok" or "AUSENTES"),
-        ("Pasta de Titãs: %s"):format(r.hasTitanFolder and "presente" or "ausente neste lugar"),
-        ("Titãs vivos: %d"):format(r.titanCount),
+        ("Remotes: %s"):format(r.remotesFound and "ok" or "AUSENTES"),
+        ("Pasta de Titãs: %s"):format(r.hasTitanFolder and "presente" or "ausente aqui"),
+        ("Titãs vivos: %s"):format(tostring(r.titanCount)),
     }
-
     if r.sampleTitan then
         table.insert(lines, ("Exemplo: %s [%s]"):format(r.sampleTitan, r.sampleKind or "?"))
         table.insert(lines, ("Nuca: %s"):format(r.sampleNape or "não encontrada"))
     end
-
-    table.insert(lines, ("Refills: %s   Nível: %s   Prestígio: %s"):format(
-        tostring(r.refills), tostring(r.level), tostring(r.prestige)))
-    table.insert(lines, ("Marcação — Exploiter: %s   Blacklisted: %s"):format(
+    table.insert(lines, ("Nível: %s  Prestígio: %s  Refills: %s"):format(
+        tostring(r.level), tostring(r.prestige), tostring(r.refills)))
+    table.insert(lines, ("Exploiter: %s  Blacklisted: %s"):format(
         tostring(r.flagged), tostring(r.blacklisted)))
 
     UI.notify("Diagnóstico", table.concat(lines, "\n"), 12)
-    print("[AOTR] Diagnóstico:")
+    print("[VHub] Diagnóstico:")
     for _, l in ipairs(lines) do print("  " .. l) end
 end
 
--- Lê as bandeiras que o próprio servidor replica de volta ao cliente.
 function UI.checkFlag()
     local exploiter, blacklisted = Game.isFlagged()
     if blacklisted then
         UI.notify("Conta Marcada",
-            "BLACKLISTED está ativo nesta conta.\nPare de usar o script e verifique o servidor do jogo.", 12)
+            "BLACKLISTED ativo nesta conta. Pare de usar o script.", 12)
     elseif exploiter then
         UI.notify("Atenção",
-            "A bandeira EXPLOITER está ativa.\nSua conta foi sinalizada. Reduza o uso e evite farms rápidos.", 10)
+            "A bandeira EXPLOITER está ativa. Reduza o uso.", 10)
     else
-        UI.notify("Conta Limpa", "Nenhuma marcação ativa. Continue respeitando o Modo Seguro.", 5)
+        UI.notify("Conta Limpa", "Nenhuma marcação ativa.", 5)
     end
 end
 
 -- ── Abas e visibilidade ──────────────────────────────────────────────────────
 
 function UI.selectTab(key)
-    if not FEATURES[key] then return end
+    if not tabs[key] then return end
     activeTab = key
 
     for k, t in pairs(tabs) do
         local on = (k == key)
         Widget.tween(t.bar, Theme.ease.out, {
-            Size = on and UDim2.new(0, 2, 0, 18) or UDim2.new(0, 2, 0, 0),
+            Size = on and UDim2.new(0, 3, 0, 20) or UDim2.new(0, 3, 0, 0),
         })
         Widget.tween(t.btn, Theme.ease.fast, { BackgroundTransparency = on and 0 or 1 })
         Widget.tween(t.icon, Theme.ease.fast, {
@@ -3560,12 +5221,11 @@ end
 
 function UI.setMinimized(v)
     minimized = v
-    local target = v and 44 or Theme.metric.winH
+    local target = v and 58 or Theme.metric.winH
     Widget.tween(root, Theme.ease.out, { Size = UDim2.fromOffset(Theme.metric.winW, target) })
     if sidebar then sidebar.Visible = not v end
     if content then content.Visible = not v end
     if statusBar then statusBar.Visible = not v end
-    UI.statusText.Text = v and "Minimizado — RightCtrl para restaurar" or "Pronto"
 end
 
 function UI.setVisible(v)
@@ -3576,32 +5236,32 @@ function UI.isVisible()
     return gui and gui.Enabled
 end
 
--- Atualiza a linha de status do rodapé. Mantido separado para que as features
--- não precisem conhecer a estrutura da barra.
 function UI.setStatus(text)
     if UI.statusText then UI.statusText.Text = text or "Pronto" end
 end
 
--- Reconstrói os controles a partir do estado atual (usado após carregar config).
 function UI.rebuild()
-    for flag, w in pairs(UI.controls) do
+    for key, w in pairs(UI.controls) do
         if w.set then
-            local v = State.flags[flag]
-            if v == nil then v = State.config[flag] end
-            pcall(function() w:set(v) end)
+            local v = State.flags[key]
+            if v == nil then v = State.config[key] end
+            if v ~= nil then pcall(function() w:set(v) end) end
         end
     end
 end
 
--- ── Loop de estatísticas ─────────────────────────────────────────────────────
--- ATENÇÃO ao RenderStepped:Wait() dentro de um while. O Xeno entrega esse
--- signal de forma que, combinado com um laço apertado, satura a thread de
--- render e o cliente fecha sem erro nenhum no log — que foi exatamente o que
--- aconteceu. Aqui o laço cede com task.wait puro e o FPS é calculado a partir
--- do delta, sem tocar em RenderStepped dentro do loop.
+-- ── Atualização ao vivo ──────────────────────────────────────────────────────
 
-local function statsLoop()
+local function refreshLoop()
     task.spawn(function()
+        -- Identidade: uma vez só, não muda durante a sessão.
+        local info = Stats.playerInfo()
+        if info then
+            UI.heroName.Text = info.display or info.name
+            UI.heroSub.Text = ("@%s · conta de %d dias"):format(info.name, info.accountAge or 0)
+            if info.avatar then UI.avatar:set(info.avatar) end
+        end
+
         local last = os.clock()
         while gui and gui.Parent do
             local now = os.clock()
@@ -3609,15 +5269,49 @@ local function statsLoop()
             last = now
 
             pcall(function()
-                if not State.flags.watermark then
-                    if UI.statsLabel then UI.statsLabel.Text = "" end
-                else
-                    local titans = #Game.getTitans()
-                    local fps = dt > 0 and math.floor(1 / dt) or 0
-                    if UI.statsLabel then
-                        UI.statsLabel.Text = ("%d titãs  ·  %d FPS"):format(titans, fps)
+                local snap = Stats.snapshot()
+
+                -- Cartões
+                if statCards.players then
+                    statCards.players:set(("%s/%s"):format(
+                        tostring(snap.serverPlayers), tostring(snap.maxPlayers)))
+                end
+                if statCards.friends then
+                    local color = snap.friends > 0 and Theme.color.accentHi or Theme.color.text
+                    statCards.friends:set(snap.friends, color)
+                end
+                if statCards.session then statCards.session:set(snap.session) end
+                if statCards.fps then
+                    local c = snap.fps >= 50 and Theme.color.ok
+                        or snap.fps >= 25 and Theme.color.warn
+                        or Theme.color.danger
+                    statCards.fps:set(snap.fps, c)
+                end
+                if statCards.ping then
+                    local p = snap.ping
+                    if p then
+                        local c = p < 80 and Theme.color.ok
+                            or p < 180 and Theme.color.warn
+                            or Theme.color.danger
+                        statCards.ping:set(p .. " ms", c)
+                    else
+                        statCards.ping:set("—")
                     end
                 end
+
+                -- Cabeçalho
+                UI.headerStats.Text = ("%s jogadores  ·  %s FPS  ·  %s"):format(
+                    tostring(snap.serverPlayers), tostring(snap.fps), tostring(snap.session))
+
+                -- Jogo e lugar. tostring em tudo que vem do ambiente: um nil
+                -- aqui derrubaria o loop de atualização inteiro a cada 500ms.
+                local kind = Game.placeKind()
+                UI.heroPlace.Text = PLACE_NAMES[kind] or kind
+                UI.gameMeta.Text = ("%s jogadores no servidor  ·  %s na experiência"):format(
+                    tostring(snap.serverPlayers),
+                    tostring(snap.universe or snap.serverPlayers))
+                UI.gamePlace.Text = ("PlaceId %s  ·  universo %s"):format(
+                    tostring(game.PlaceId), tostring(game.GameId or "?"))
             end)
 
             task.wait(0.5)
@@ -3627,28 +5321,37 @@ end
 
 -- ── Montagem ─────────────────────────────────────────────────────────────────
 
+-- Referência tardia ao módulo Lobby, para evitar dependência circular na carga.
+local Lobby_ref = nil
+
+function UI.bindLobby(mod)
+    Lobby_ref = mod
+end
+
 function UI.mount()
     buildRoot()
     buildHeader()
     buildSidebar()
     buildContent()
     buildStatusBar()
-    -- região de notificações, acima da janela
+
     toastHolder = Widget.new("Frame", {
         Name = "Toasts",
-        Size = UDim2.fromOffset(260, 300),
-        Position = UDim2.new(0.5, Theme.metric.winW / 2 + 8, 0.5, Theme.metric.winH / 2 - 300),
+        Size = UDim2.fromOffset(300, 340),
+        Position = UDim2.new(0.5, Theme.metric.winW / 2 + 10, 0.5, Theme.metric.winH / 2 - 340),
         BackgroundTransparency = 1,
-        ZIndex = 40,
+        ZIndex = 55,
         Parent = gui,
     })
 
-    for _, key in ipairs({ "combate", "recursos", "visual", "sistema" }) do
-        buildPage(key)
-    end
-    UI.selectTab("combate")
+    buildHome()
+    buildMissoes()
+    buildLobby()
+    buildVisual()
+    buildConfig()
 
-    -- atalho
+    UI.selectTab("home")
+
     UserInputService.InputBegan:Connect(function(input, processed)
         if processed then return end
         if input.KeyCode == Enum.KeyCode.RightControl then
@@ -3656,8 +5359,8 @@ function UI.mount()
         end
     end)
 
-    UI.statusText.Text = ("Pronto · %s"):format(Util.executorName())
-    statsLoop()
+    UI.setStatus(("Pronto · %s"):format(Util.executorName()))
+    refreshLoop()
     return gui
 end
 
@@ -3665,6 +5368,7 @@ function UI.unmount()
     if gui then gui:Destroy(); gui = nil end
     UI.controls = {}
     tabs, pages = {}, {}
+    statCards = {}
 end
 
 return UI
@@ -3682,31 +5386,27 @@ local __src = [==[
 local __req = ...
 --[[
     ============================================================================
-    AOTR · Attack on Titan Revolution — Script Hub
+    VHub · Attack on Titan Revolution
     ============================================================================
-    Versão   : 1.0.0
-    Jogo     : Attack on Titan Revolution (Roblox)
-    PlaceId  : 13379208636
-    Interface: PT-BR
+    Versão   : 2.0.0
+    Interface: PT-BR · preta e vermelha
 
-    COMO USAR
-    ---------
-    Cole o conteúdo de build/AOTR.lua no seu executor e execute.
-    RightControl mostra e esconde a interface.
+    Estrutura de abas:
+      Home    — identidade, estatísticas ao vivo, jogo atual
+      Missões — combate, movimento, nuca, pós-missão
+      Lobby   — criação de missão e progressão
+      Visual  — ESP
+      Config  — sistema, avançado, dados
 
-    Este arquivo é o ponto de entrada. O bundler (build/bundle.mjs) resolve os
-    módulos de src/ e injeta o resolvedor __req como parâmetro deste chunk.
+    RightControl abre e fecha.
     ============================================================================
 --]]
 
 -- ── Serviços ─────────────────────────────────────────────────────────────────
 
 local Players = game:GetService("Players")
-local RunService = game:GetService("RunService")
 
 -- ── Módulos ──────────────────────────────────────────────────────────────────
--- __req chega por parâmetro do bundle. Fora do bundle, avisamos em vez de
--- falhar de forma obscura mais adiante.
 
 
 local Theme     = __req("core/theme")
@@ -3714,80 +5414,95 @@ local Widget    = __req("core/widget")
 local State     = __req("core/state")
 local Util      = __req("core/util")
 local Game_     = __req("core/game")
-local Combat    = __req("features/combat")
+local Stats     = __req("core/stats")
+local Mission   = __req("features/mission")
+local Lobby     = __req("features/lobby")
+local Post      = __req("features/postmission")
 local Visuals   = __req("features/visuals")
 local Utility   = __req("features/utility")
 local Interface = __req("ui/interface")
 
--- ── Verificação de jogo ──────────────────────────────────────────────────────
--- O AOTR tem 14 places no mesmo universo (lobby, cidades e campos de missão).
--- Guard em duas camadas: GameId confirma a identidade, a pasta Titans confirma
--- que dá para caçar aqui. Só o GameId passaria nos 14 — inclusive nos que não
--- têm Titã nenhum.
---
--- Nada bloqueia: apenas informa onde estamos e o que esperar.
+-- ── Verificação do lugar ─────────────────────────────────────────────────────
+-- O AOTR tem 14 lugares. Guard em duas camadas: GameId confirma a identidade,
+-- a pasta Titans confirma que dá para caçar aqui. Nada bloqueia — só informa.
 
 local advice = Game_.placeAdvice()
+local kind = Game_.placeKind()
 
 if not Game_.isAOTR() then
-    warn(("[AOTR] Este não parece ser o AOTR (GameId %d, esperado %d). O script vai tentar mesmo assim.")
-        :format(game.GameId, Game_.UNIVERSE_ID))
+    warn(("[VHub] Este não parece ser o AOTR (GameId %s, esperado %s).")
+        :format(tostring(game.GameId), tostring(Game_.UNIVERSE_ID)))
 end
 
 -- ── Hub ──────────────────────────────────────────────────────────────────────
 
 local Hub = {}
-Hub.version = "1.0.0"
+Hub.version = "2.0.0"
 Hub.placeId = game.PlaceId
-Hub.placeKind = Game_.placeKind()
+Hub.placeKind = kind
 
--- Carrega preferências antes de montar a UI, para que os controles nasçam com
--- os valores certos em vez de piscar em "tudo desligado".
+Interface.VERSION = Hub.version
+Interface.bindLobby(Lobby)
+
+-- Preferências antes da UI, para os controles nascerem certos.
 local loaded = State.load()
 
--- mount() devolve o ScreenGui criado; o ESP precisa dele como container.
 local screenGui = Interface.mount()
 Visuals.mount(screenGui)
 
 -- ── Ligações estado -> feature ───────────────────────────────────────────────
 
+local function countGroup(keys)
+    return State.countActive(keys)
+end
+
 State.on("esp", function(on)
     Interface.setStatus(on and "ESP ativo" or "Pronto")
 end)
 
-State.on("killAura", function(on)
+State.on("autoKill", function(on)
     if on then
-        Interface.notify("Combate", ("Kill Aura ativado · alcance %d studs"):format(
-            State.config.killAuraRange))
-        if State.config.hitMagnitude > 40 then
+        Interface.notify("Missões", ("Ataque automático ligado · alcance %s studs"):format(
+            tostring(State.config.killRange)))
+        if State.config.hitMagnitude > 150 then
             Interface.notify("Atenção",
-                "Magnitude de acerto alta. Isso é fisicamente impossível no jogo e aumenta o risco de marcação.",
-                7)
+                "Magnitude muito alta. Isso é fisicamente impossível no jogo e aumenta o risco de marcação.",
+                8)
         end
     end
 end)
 
 State.on("napeExpander", function(on)
-    if not on then Combat.restoreNapes() end
+    if not on then Mission.restoreNapes() end
 end)
 
 State.on("safeFarm", function(on)
-    Interface.setStatus(on and "Modo Seguro ativo" or "Pronto")
     if not on then
-        Interface.notify("Atenção", "Modo Seguro desligado. Farms rápidos podem marcar a conta.", 6)
+        Interface.notify("Atenção",
+            "Modo Seguro desligado. Farms rápidos são o gatilho de shadow ban mais relatado.", 7)
+    end
+end)
+
+State.on("openPremiumChest", function(on)
+    if on then
+        Interface.notify("Baú premium",
+            "Ligado. Isso gasta recurso da sua conta.", 6)
     end
 end)
 
 -- ── Loops ────────────────────────────────────────────────────────────────────
 
-Combat.start()
+Mission.start()
+Lobby.start()
+Post.start()
 Utility.start()
 
 -- ── Encerramento limpo ───────────────────────────────────────────────────────
--- Sem isto, rodar o script duas vezes duplica os loops e dobra o consumo.
 
 local function shutdown()
-    pcall(function() Combat.stop() end)
+    pcall(function() Mission.stop() end)
+    pcall(function() Lobby.stop() end)
+    pcall(function() Post.stop() end)
     pcall(function() Utility.stop() end)
     pcall(function() Visuals.unmount() end)
     pcall(function() Interface.unmount() end)
@@ -3795,27 +5510,22 @@ local function shutdown()
 end
 Hub.shutdown = shutdown
 
--- ── Boas-vindas e checagens ──────────────────────────────────────────────────
+-- ── Boas-vindas ──────────────────────────────────────────────────────────────
 
-task.delay(0.7, function()
-    Interface.notify("AOTR carregado",
-        ("v%s · %s · RightControl para abrir."):format(Hub.version, Hub.placeKind), 5)
+task.delay(0.8, function()
+    Interface.notify("VHub",
+        ("v%s · %s · RightControl para abrir."):format(Hub.version, kind), 5)
 
     if loaded then
-        Interface.notify("Configuração", "Preferências salvas restauradas.", 3)
+        Interface.notify("Configuração", "Preferências restauradas.", 3)
     end
 
-    -- Se este lugar não tem Titãs, diz o motivo exato — combate e ESP não têm
-    -- o que fazer aqui, e sem isso o usuário acha que o script quebrou.
     if advice then
-        task.delay(2, function()
-            Interface.notify("Local atual", advice, 9)
-        end)
+        task.delay(2, function() Interface.notify("Local atual", advice, 9) end)
     end
 end)
 
--- Avisa cedo se a conta já está marcada. É a informação mais importante que o
--- usuário pode receber, e o servidor replica ela de volta ao cliente.
+-- Avisa se a conta já está marcada — é a informação mais importante.
 task.delay(1.5, function()
     local exploiter, blacklisted = Game_.isFlagged()
     if blacklisted then
@@ -3823,28 +5533,27 @@ task.delay(1.5, function()
             "Sua conta está BLACKLISTED. Pare de usar o script.", 15)
     elseif exploiter then
         Interface.notify("Atenção",
-            "Bandeira EXPLOITER ativa. Reduza o uso e evite farms rápidos.", 10)
+            "Bandeira EXPLOITER ativa. Reduza o uso.", 10)
     end
 end)
 
--- Se nada aparecer em 20 s, distingue "ainda não tem onda" de "o jogo mudou os
--- nomes". São problemas diferentes com soluções diferentes.
+-- Se a pasta de Titãs existe mas nada foi lido, o jogo mudou os nomes.
 task.delay(20, function()
     local ok, titans = pcall(function() return Game_.getTitans(true) end)
     if ok and #titans == 0 and Game_.hasTitans() then
         Interface.notify("Titãs não reconhecidos",
-            "A pasta de Titãs existe, mas nenhum foi lido. Abra Sistema → Diagnóstico do Jogo.", 10)
+            "A pasta existe, mas nenhum Titã foi lido. Abra Config → Diagnóstico.", 10)
     end
 end)
 
--- ── Exposição para inspeção manual ───────────────────────────────────────────
+-- ── Expoe para inspeção ──────────────────────────────────────────────────────
 
 if Util.getGenv then
-    pcall(function() Util.getGenv().AOTR = Hub end)
+    pcall(function() Util.getGenv().VHub = Hub end)
 end
 
-print(("[AOTR] v%s · PlaceId %d · executor: %s"):format(
-    Hub.version, game.PlaceId, Util.executorName()))
+print(("[VHub] v%s · PlaceId %s · %s · executor: %s"):format(
+    Hub.version, tostring(game.PlaceId), kind, Util.executorName()))
 
 return Hub
 
