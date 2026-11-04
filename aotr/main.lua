@@ -65,31 +65,43 @@ Game.getLocalPlayer = getLocalPlayer
 
 -- ── Identidade e lugares ─────────────────────────────────────────────────────
 -- O AOTR NÃO é um lugar só. O universo 4658598196 tem 14 places distintos:
--- um menu/lobby principal, zonas de cidade (onde ficam lojas e o comércio) e
--- os campos de missão onde os Titãs realmente aparecem.
+-- o lugar-raiz (vitrine pública), o lobby social onde ficam lojas e a entrada
+-- das missões, e os campos de batalha onde os Titãs aparecem.
 --
--- POR ISSO o guard não pode ser por PlaceId. Ele muda a cada vez que o jogador
--- troca de área — e comparar com o principal faz o script achar que está no
--- jogo errado justamente quando está no lugar certo.
+-- GUARD EM DUAS CAMADAS — e a razão de um teste só não bastar:
 --
--- O que é estável é o GameId (universeId), idêntico nos 14.
-Game.UNIVERSE_ID   = 4658598196
-Game.ROOT_PLACE_ID = 13379208636   -- o principal, para referência
-Game.CREATOR_ID    = 17347863      -- grupo "AoTR [PI]"
+--   IDENTIDADE ("é o AOTR?")     -> game.GameId == 4658598196
+--                                   Estável nos 14 lugares. Diz que estamos
+--                                   no jogo certo, e só isso.
+--
+--   CAPACIDADE ("dá pra caçar?") -> workspace.Titans existe?
+--                                   O GameId NÃO distingue lobby de campo.
+--                                   Indexar workspace.Titans no lobby levanta
+--                                   erro. É a existência da pasta que autoriza.
+--
+-- Um guard só de GameId parece mais elegante e é uma armadilha: ele passa nos
+-- 14 lugares, inclusive nos 4 onde o combate não tem o que fazer.
+Game.UNIVERSE_ID    = 4658598196
+Game.ROOT_PLACE_ID  = 13379208636   -- lugar-raiz (vitrine), NÃO é o lobby
+Game.LOBBY_PLACE_ID = 14916516914   -- Town Central: o lobby de verdade
+Game.CREATOR_ID     = 17347863      -- grupo "AoTR [PI]"
 
 -- Lugares conhecidos, agrupados por papel. Descobertos via
--- develop.roblox.com/v1/universes/4658598196/places
+-- develop.roblox.com/v1/universes/4658598196/places e conferidos contra a
+-- ALLOWED_PLACES de um script público — as duas fontes batem.
 Game.PLACES = {
-    -- Menu / lobby principal
+    -- Vitrine / raiz
     [13379208636] = "principal",
+
+    -- Lobby social: lojas, comércio, treino. Sem Titãs.
     [14916516914] = "lobby",       -- Town Central
     [14932214603] = "lobby",       -- Trade Central
     [112374853034490] = "lobby",   -- Training Grounds
     [126678335159530] = "lobby",   -- Chapel
 
-    -- Campos de missão e zonas exteriores — aqui existem Titãs
+    -- Campos de batalha — aqui existem Titãs
     [13379349730] = "campo",       -- Shiganshina
-    [13904207646] = "campo",       -- Outskirts
+    [13904204676] = "campo",       -- Outskirts
     [14012874501] = "campo",       -- Trost
     [14638336319] = "campo",       -- Forest
     [15030367419] = "campo",       -- Outside the Walls 1
@@ -104,16 +116,41 @@ function Game.placeKind()
     return Game.PLACES[game.PlaceId] or "desconhecido"
 end
 
--- Estamos em algum lugar do AOTR? O GameId é o teste correto — vale nos 14.
+-- Camada 1 — identidade. Estamos em algum lugar do AOTR?
 function Game.isAOTR()
     if game.GameId == Game.UNIVERSE_ID then return true end
-    -- Fallback: os dois remotes são a impressão digital que os scripts usam.
+    -- Fallback: os dois remotes são a impressão digital que os scripts usam,
+    -- e existem nos 14 lugares.
     return Game.getRemotes().ok
 end
 
--- Haverá Titãs aqui? No lobby não há, e isso não é erro.
+-- Camada 2 — capacidade. Aqui há Titãs para caçar?
+-- Usa FindFirstChild, nunca indexação direta: no lobby a pasta não existe, e
+-- `workspace.Titans` seria erro em vez de nil.
 function Game.hasTitans()
     return Game.getTitanFolder() ~= nil
+end
+
+-- Podemos operar em modo combate? Junta as duas camadas.
+function Game.canFight()
+    return Game.hasTitans()
+end
+
+-- Aviso legível, com o motivo exato. nil quando não há nada a avisar.
+function Game.placeAdvice()
+    if Game.hasTitans() then return nil end
+
+    local kind = Game.placeKind()
+    if kind == "campo" then
+        return "Campo de missão sem Titãs ativos. Aguarde a onda começar."
+    end
+    if kind == "lobby" or kind == "principal" then
+        return "Você está no lobby. Aqui não há Titãs — entre numa missão para usar o combate."
+    end
+    if Game.isAOTR() then
+        return "Este lugar do AOTR não tem Titãs. Entre numa missão."
+    end
+    return "Este não parece ser o AOTR. O script vai tentar mesmo assim."
 end
 
 -- ── Remotes ──────────────────────────────────────────────────────────────────
@@ -3683,13 +3720,14 @@ local Utility   = __req("features/utility")
 local Interface = __req("ui/interface")
 
 -- ── Verificação de jogo ──────────────────────────────────────────────────────
--- O AOTR tem 14 places (lobby, cidades e campos de missão), todos no mesmo
--- universo. Guardar por PlaceId seria errado — ele muda quando o jogador troca
--- de área. O teste correto é o GameId.
+-- O AOTR tem 14 places no mesmo universo (lobby, cidades e campos de missão).
+-- Guard em duas camadas: GameId confirma a identidade, a pasta Titans confirma
+-- que dá para caçar aqui. Só o GameId passaria nos 14 — inclusive nos que não
+-- têm Titã nenhum.
 --
--- Não bloqueia nada: apenas informa onde estamos e o que esperar daqui.
+-- Nada bloqueia: apenas informa onde estamos e o que esperar.
 
-local kind = Game_.placeKind()
+local advice = Game_.placeAdvice()
 
 if not Game_.isAOTR() then
     warn(("[AOTR] Este não parece ser o AOTR (GameId %d, esperado %d). O script vai tentar mesmo assim.")
@@ -3701,7 +3739,7 @@ end
 local Hub = {}
 Hub.version = "1.0.0"
 Hub.placeId = game.PlaceId
-Hub.placeKind = kind
+Hub.placeKind = Game_.placeKind()
 
 -- Carrega preferências antes de montar a UI, para que os controles nasçam com
 -- os valores certos em vez de piscar em "tudo desligado".
@@ -3761,18 +3799,17 @@ Hub.shutdown = shutdown
 
 task.delay(0.7, function()
     Interface.notify("AOTR carregado",
-        ("v%s · %s · RightControl para abrir."):format(Hub.version, kind), 5)
+        ("v%s · %s · RightControl para abrir."):format(Hub.version, Hub.placeKind), 5)
 
     if loaded then
         Interface.notify("Configuração", "Preferências salvas restauradas.", 3)
     end
 
-    -- No lobby não existem Titãs. Dizer isso evita que pareça defeito.
-    if kind == "lobby" or kind == "principal" then
+    -- Se este lugar não tem Titãs, diz o motivo exato — combate e ESP não têm
+    -- o que fazer aqui, e sem isso o usuário acha que o script quebrou.
+    if advice then
         task.delay(2, function()
-            Interface.notify("Você está no lobby",
-                "Aqui não há Titãs. As funções de combate e ESP passam a agir quando você entra numa missão.",
-                8)
+            Interface.notify("Local atual", advice, 9)
         end)
     end
 end)
@@ -3790,18 +3827,13 @@ task.delay(1.5, function()
     end
 end)
 
--- Se nenhum Titã aparecer, distingue "lugar errado" de "jogo mudou". Sem isso o
--- usuário no lobby acha que o script quebrou.
+-- Se nada aparecer em 20 s, distingue "ainda não tem onda" de "o jogo mudou os
+-- nomes". São problemas diferentes com soluções diferentes.
 task.delay(20, function()
     local ok, titans = pcall(function() return Game_.getTitans(true) end)
-    if ok and #titans == 0 then
-        if not Game_.hasTitans() then
-            Interface.notify("Sem Titãs aqui",
-                "Este lugar não tem Titãs. Entre em uma missão para usar o combate.", 10)
-        else
-            Interface.notify("Titãs não reconhecidos",
-                "A pasta existe mas nenhum Titã foi lido. Abra Sistema → Diagnóstico do Jogo.", 10)
-        end
+    if ok and #titans == 0 and Game_.hasTitans() then
+        Interface.notify("Titãs não reconhecidos",
+            "A pasta de Titãs existe, mas nenhum foi lido. Abra Sistema → Diagnóstico do Jogo.", 10)
     end
 end)
 
