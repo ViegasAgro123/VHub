@@ -63,19 +63,57 @@ local function getLocalPlayer()
 end
 Game.getLocalPlayer = getLocalPlayer
 
--- ── Identidade do jogo ───────────────────────────────────────────────────────
--- O NOME do jogo muda a cada update ("[UPDATE 5] ..."), então nunca serve de
--- guarda. Estes dois valores são estáveis.
-Game.ROOT_PLACE_ID = 13379208636
+-- ── Identidade e lugares ─────────────────────────────────────────────────────
+-- O AOTR NÃO é um lugar só. O universo 4658598196 tem 14 places distintos:
+-- um menu/lobby principal, zonas de cidade (onde ficam lojas e o comércio) e
+-- os campos de missão onde os Titãs realmente aparecem.
+--
+-- POR ISSO o guard não pode ser por PlaceId. Ele muda a cada vez que o jogador
+-- troca de área — e comparar com o principal faz o script achar que está no
+-- jogo errado justamente quando está no lugar certo.
+--
+-- O que é estável é o GameId (universeId), idêntico nos 14.
 Game.UNIVERSE_ID   = 4658598196
-Game.CREATOR_ID    = 17347863   -- grupo "AoTR [PI]"
+Game.ROOT_PLACE_ID = 13379208636   -- o principal, para referência
+Game.CREATOR_ID    = 17347863      -- grupo "AoTR [PI]"
 
+-- Lugares conhecidos, agrupados por papel. Descobertos via
+-- develop.roblox.com/v1/universes/4658598196/places
+Game.PLACES = {
+    -- Menu / lobby principal
+    [13379208636] = "principal",
+    [14916516914] = "lobby",       -- Town Central
+    [14932214603] = "lobby",       -- Trade Central
+    [112374853034490] = "lobby",   -- Training Grounds
+    [126678335159530] = "lobby",   -- Chapel
+
+    -- Campos de missão e zonas exteriores — aqui existem Titãs
+    [13379349730] = "campo",       -- Shiganshina
+    [13904207646] = "campo",       -- Outskirts
+    [14012874501] = "campo",       -- Trost
+    [14638336319] = "campo",       -- Forest
+    [15030367419] = "campo",       -- Outside the Walls 1
+    [15220308770] = "campo",       -- Utgard
+    [15374465998] = "campo",       -- Outside the Walls 2
+    [15824912319] = "campo",       -- Stohess
+    [17688739434] = "campo",       -- Docks
+}
+
+-- Tipo do lugar atual: "principal" | "lobby" | "campo" | "desconhecido"
+function Game.placeKind()
+    return Game.PLACES[game.PlaceId] or "desconhecido"
+end
+
+-- Estamos em algum lugar do AOTR? O GameId é o teste correto — vale nos 14.
 function Game.isAOTR()
-    if game.PlaceId == Game.ROOT_PLACE_ID then return true end
-    -- CreatorId não é exposto ao cliente Lua. A impressão digital confiável é a
-    -- presença dos dois remotes, que é o que os próprios scripts usam — e
-    -- sobrevive a re-upload do place sob outro id.
+    if game.GameId == Game.UNIVERSE_ID then return true end
+    -- Fallback: os dois remotes são a impressão digital que os scripts usam.
     return Game.getRemotes().ok
+end
+
+-- Haverá Titãs aqui? No lobby não há, e isso não é erro.
+function Game.hasTitans()
+    return Game.getTitanFolder() ~= nil
 end
 
 -- ── Remotes ──────────────────────────────────────────────────────────────────
@@ -312,14 +350,19 @@ function Game.diagnose()
     local titans = Game.getTitans(true)
     local r = Game.getRemotes()
     local flagged, blacklisted = Game.isFlagged()
+    local folder = Game.getTitanFolder()
 
     local report = {
         placeId = game.PlaceId,
-        isAOTR = (game.PlaceId == Game.ROOT_PLACE_ID),
+        placeKind = Game.placeKind(),
+        gameId = game.GameId,
+        isAOTR = Game.isAOTR(),
+        hasTitanFolder = folder ~= nil,
         remotesFound = r.ok,
         titanCount = #titans,
         sampleTitan = nil,
         sampleNape = nil,
+        sampleKind = nil,
         sampleParts = nil,
         refills = Game.getRefills(),
         level = Game.getLevel(),
@@ -334,7 +377,7 @@ function Game.diagnose()
     if titans[1] then
         local t = titans[1]
         report.sampleTitan = t.name
-        report.sampleNape = t.nape.Name
+        report.sampleNape = t.nape and t.nape.Name or nil
         report.sampleKind = t.kind
         local parts = {}
         local hitboxes = t.model:FindFirstChild("Hitboxes")
@@ -3412,29 +3455,34 @@ Util._onNotify = UI.notify
 
 function UI.showDiagnostic()
     local r = Game.diagnose()
+    local placeNames = {
+        principal = "Menu principal",
+        lobby = "Lobby / cidade",
+        campo = "Campo de missão",
+        desconhecido = "Desconhecido",
+    }
+
     local lines = {
-        ("PlaceId: %d %s"):format(r.placeId, r.isAOTR and "(correto)" or "(INESPERADO)"),
-        ("Remotes GET/POST: %s"):format(r.remotesFound and "encontrados" or "AUSENTES"),
+        ("Lugar: %s (%d)"):format(placeNames[r.placeKind] or "?", r.placeId),
+        ("Universo: %s"):format(r.isAOTR and "AOTR confirmado" or "NÃO é o AOTR"),
+        ("Remotes GET/POST: %s"):format(r.remotesFound and "ok" or "AUSENTES"),
+        ("Pasta de Titãs: %s"):format(r.hasTitanFolder and "presente" or "ausente neste lugar"),
         ("Titãs vivos: %d"):format(r.titanCount),
     }
+
     if r.sampleTitan then
         table.insert(lines, ("Exemplo: %s [%s]"):format(r.sampleTitan, r.sampleKind or "?"))
-        table.insert(lines, ("Nuca: %s"):format(r.sampleNape or "NÃO ENCONTRADA"))
-    else
-        table.insert(lines, "Nenhum Titã no mapa agora.")
+        table.insert(lines, ("Nuca: %s"):format(r.sampleNape or "não encontrada"))
     end
-    table.insert(lines, ("Refills: %s"):format(tostring(r.refills)))
-    table.insert(lines, ("Nível: %s  Prestígio: %s"):format(tostring(r.level), tostring(r.prestige)))
-    table.insert(lines, ("Lanças: %s  Lâmina quebrada: %s"):format(tostring(r.spears), tostring(r.bladeBroken)))
-    table.insert(lines, ("Estação de reabastecimento: %s"):format(r.refillStation and "visível" or "não encontrada"))
-    table.insert(lines, ("Exploiter: %s  Blacklisted: %s"):format(tostring(r.flagged), tostring(r.blacklisted)))
 
-    UI.notify("Diagnóstico", table.concat(lines, "\n"), 10)
+    table.insert(lines, ("Refills: %s   Nível: %s   Prestígio: %s"):format(
+        tostring(r.refills), tostring(r.level), tostring(r.prestige)))
+    table.insert(lines, ("Marcação — Exploiter: %s   Blacklisted: %s"):format(
+        tostring(r.flagged), tostring(r.blacklisted)))
+
+    UI.notify("Diagnóstico", table.concat(lines, "\n"), 12)
     print("[AOTR] Diagnóstico:")
     for _, l in ipairs(lines) do print("  " .. l) end
-    if r.sampleParts and #r.sampleParts > 0 then
-        print("  Hitboxes: " .. table.concat(r.sampleParts, ", "))
-    end
 end
 
 -- Lê as bandeiras que o próprio servidor replica de volta ao cliente.
@@ -3509,22 +3557,32 @@ function UI.rebuild()
 end
 
 -- ── Loop de estatísticas ─────────────────────────────────────────────────────
+-- ATENÇÃO ao RenderStepped:Wait() dentro de um while. O Xeno entrega esse
+-- signal de forma que, combinado com um laço apertado, satura a thread de
+-- render e o cliente fecha sem erro nenhum no log — que foi exatamente o que
+-- aconteceu. Aqui o laço cede com task.wait puro e o FPS é calculado a partir
+-- do delta, sem tocar em RenderStepped dentro do loop.
 
 local function statsLoop()
     task.spawn(function()
+        local last = os.clock()
         while gui and gui.Parent do
-            local ok = pcall(function()
+            local now = os.clock()
+            local dt = now - last
+            last = now
+
+            pcall(function()
                 if not State.flags.watermark then
-                    UI.statsLabel.Text = ""
+                    if UI.statsLabel then UI.statsLabel.Text = "" end
                 else
                     local titans = #Game.getTitans()
-                    local parts = {
-                        ("%d titãs"):format(titans),
-                        ("%d FPS"):format(math.floor(1 / math.max(RunService.RenderStepped:Wait(), 1e-3))),
-                    }
-                    UI.statsLabel.Text = table.concat(parts, "  ·  ")
+                    local fps = dt > 0 and math.floor(1 / dt) or 0
+                    if UI.statsLabel then
+                        UI.statsLabel.Text = ("%d titãs  ·  %d FPS"):format(titans, fps)
+                    end
                 end
             end)
+
             task.wait(0.5)
         end
     end)
@@ -3625,12 +3683,17 @@ local Utility   = __req("features/utility")
 local Interface = __req("ui/interface")
 
 -- ── Verificação de jogo ──────────────────────────────────────────────────────
--- O NOME do jogo muda a cada update ("[UPDATE 5] ..."), então não serve de
--- guarda. O PlaceId é estável. Não bloqueia: apenas avisa.
+-- O AOTR tem 14 places (lobby, cidades e campos de missão), todos no mesmo
+-- universo. Guardar por PlaceId seria errado — ele muda quando o jogador troca
+-- de área. O teste correto é o GameId.
+--
+-- Não bloqueia nada: apenas informa onde estamos e o que esperar daqui.
 
-if game.PlaceId ~= Game_.ROOT_PLACE_ID then
-    warn(("[AOTR] PlaceId %d não é o AOTR (%d). O script vai tentar mesmo assim.")
-        :format(game.PlaceId, Game_.ROOT_PLACE_ID))
+local kind = Game_.placeKind()
+
+if not Game_.isAOTR() then
+    warn(("[AOTR] Este não parece ser o AOTR (GameId %d, esperado %d). O script vai tentar mesmo assim.")
+        :format(game.GameId, Game_.UNIVERSE_ID))
 end
 
 -- ── Hub ──────────────────────────────────────────────────────────────────────
@@ -3638,6 +3701,7 @@ end
 local Hub = {}
 Hub.version = "1.0.0"
 Hub.placeId = game.PlaceId
+Hub.placeKind = kind
 
 -- Carrega preferências antes de montar a UI, para que os controles nasçam com
 -- os valores certos em vez de piscar em "tudo desligado".
@@ -3697,10 +3761,19 @@ Hub.shutdown = shutdown
 
 task.delay(0.7, function()
     Interface.notify("AOTR carregado",
-        ("v%s · RightControl para abrir e fechar."):format(Hub.version), 5)
+        ("v%s · %s · RightControl para abrir."):format(Hub.version, kind), 5)
 
     if loaded then
         Interface.notify("Configuração", "Preferências salvas restauradas.", 3)
+    end
+
+    -- No lobby não existem Titãs. Dizer isso evita que pareça defeito.
+    if kind == "lobby" or kind == "principal" then
+        task.delay(2, function()
+            Interface.notify("Você está no lobby",
+                "Aqui não há Titãs. As funções de combate e ESP passam a agir quando você entra numa missão.",
+                8)
+        end)
     end
 end)
 
@@ -3717,13 +3790,18 @@ task.delay(1.5, function()
     end
 end)
 
--- Se nenhum Titã aparecer em 20 s, o usuário precisa saber que é o jogo que
--- mudou, não o script que quebrou em silêncio.
+-- Se nenhum Titã aparecer, distingue "lugar errado" de "jogo mudou". Sem isso o
+-- usuário no lobby acha que o script quebrou.
 task.delay(20, function()
     local ok, titans = pcall(function() return Game_.getTitans(true) end)
     if ok and #titans == 0 then
-        Interface.notify("Nenhum Titã encontrado",
-            "Abra Sistema → Diagnóstico do Jogo e me mande o resultado.", 10)
+        if not Game_.hasTitans() then
+            Interface.notify("Sem Titãs aqui",
+                "Este lugar não tem Titãs. Entre em uma missão para usar o combate.", 10)
+        else
+            Interface.notify("Titãs não reconhecidos",
+                "A pasta existe mas nenhum Titã foi lido. Abra Sistema → Diagnóstico do Jogo.", 10)
+        end
     end
 end)
 
