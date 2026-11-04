@@ -546,11 +546,11 @@ local __src = [=[
 --[[
     AOTR · Núcleo de Tema
     Arquivo: src/core/theme.lua
-    
+
     Paleta preta / vermelha / cinza-gradiente, derivada do estudo do AirFlow
     (fundo #060608, accent dessaturado, cantos suaves, glow sutil) mas invertida
     para o eixo vermelho e com profundidade real em vez de cor chapada.
-    
+
     Cada token é calculado a partir de três âncoras — tinta, sangue, cinza —
     para que mudar a identidade inteira seja editar 3 constantes, não 40.
 --]]
@@ -622,11 +622,17 @@ Theme.color = {
 
 -- ── Gradiente ────────────────────────────────────────────────────────────────
 -- Roblox não tem gradiente nativo em Instance sem UIGradient. Em vez de criar
--- 200 UIGradients (custo de instância), pré-computo 24 paradas e as reuso.
+-- 200 UIGradients (custo de instância), pré-computo as paradas e as reuso.
 -- O cinza-gradiente pedido vive aqui: cinza quente no topo, cinza frio embaixo.
+--
+-- LIMITE IMPORTANTE: ColorSequence e NumberSequence aceitam NO MÁXIMO 20
+-- keypoints. Com 21 ou mais, o construtor levanta "table is too long" e derruba
+-- o script inteiro antes da UI montar — a janela aparece branca e nada funciona.
+-- 24 paradas foi exatamente esse erro na primeira versão em produção.
+Theme.SEQUENCE_LIMIT = 20
 Theme.gradient = {}
 do
-    local STOPS = 24
+    local STOPS = Theme.SEQUENCE_LIMIT
     local topo = mix(CINZA, Color3.new(1, 1, 1), 0.10)
     local meio = mix(TINTA, CINZA, 0.10)
     local fundo = darken(TINTA, 0.25)
@@ -643,31 +649,32 @@ do
     Theme.gradient.stops = STOPS
 
     -- Aplica um gradiente vertical a um Frame via UIGradient.
+    -- O clamp em SEQUENCE_LIMIT é defensivo: se as paradas forem aumentadas no
+    -- futuro, o gradiente degrada para menos pontos em vez de derrubar o script.
     function Theme.applyGradient(frame, flip, alphaTop, alphaBot)
         local g = Instance.new("UIGradient")
         g.Rotation = flip and 180 or 90   -- 90 = topo->base
+
+        local n = math.min(Theme.gradient.stops, Theme.SEQUENCE_LIMIT)
+
         local seq = {}
-        for i = 0, STOPS - 1 do
-            local t = i / (STOPS - 1)
-            local a = 0
-            if alphaTop or alphaBot then
-                local at = alphaTop or 0
-                local ab = alphaBot or 0
-                a = at + (ab - at) * t
-            end
+        for i = 0, n - 1 do
+            local t = i / (n - 1)
             table.insert(seq, ColorSequenceKeypoint.new(t, Theme.gradient[i]))
         end
         g.Color = ColorSequence.new(seq)
+
         if alphaTop or alphaBot then
+            local at = alphaTop or 0
+            local ab = alphaBot or 0
             local aseq = {}
-            for i = 0, STOPS - 1 do
-                local t = i / (STOPS - 1)
-                local at = alphaTop or 0
-                local ab = alphaBot or 0
+            for i = 0, n - 1 do
+                local t = i / (n - 1)
                 table.insert(aseq, NumberSequenceKeypoint.new(t, at + (ab - at) * t))
             end
             g.Transparency = NumberSequence.new(aseq)
         end
+
         g.Parent = frame
         return g
     end
