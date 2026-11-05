@@ -80,6 +80,16 @@ local CAP = {
     getgc           = pegarGlobal("getgc"),
 }
 
+-- Nomes alternativos: cada executor batiza a mesma coisa de um jeito.
+CAP.hookfunction = CAP.hookfunction or pegarGlobal("replaceclosure") or pegarGlobal("hookfunc")
+CAP.setreadonly = CAP.setreadonly or pegarGlobal("make_writeable")
+if not CAP.getrawmetatable and debug and type(debug.getmetatable) == "function" then
+    CAP.getrawmetatable = function(obj) return debug.getmetatable(obj) end
+end
+if not CAP.getnamecall and debug and type(debug.getnamecallmethod) == "function" then
+    CAP.getnamecall = debug.getnamecallmethod
+end
+
 local typeOf = typeof or type
 
 -- ── Utilidades de texto ──────────────────────────────────────────────────────
@@ -295,13 +305,33 @@ local function anotar(nome, metodo, args, ret, dt, classe)
 end
 
 local hooksInstalados = {}
+local HOOK_DIAG = {}
 
 local function instalarHookRemotes()
+    HOOK_DIAG = {}
+
+    local function registrarTentativa(nome, ok, detalhe)
+        HOOK_DIAG[nome] = ok and "ok" or tostring(detalhe)
+    end
+
+    -- Sem getnamecallmethod, o método sai do tipo do remote. POST é
+    -- RemoteEvent (FireServer), GET é RemoteFunction (InvokeServer).
+    local function metodoDe(self, metodo)
+        if metodo and metodo ~= "" then return metodo end
+        local ok, classe = pcall(function() return self.ClassName end)
+        if not ok then return "?" end
+        if classe == "RemoteFunction" then return "InvokeServer" end
+        if classe == "RemoteEvent" or classe == "UnreliableRemoteEvent" then return "FireServer" end
+        return "?"
+    end
+
     -- Núcleo comum: decide se interessa, mede e devolve os retornos intactos.
     local function tratar(old, self, metodo, ...)
         if not ehRemoteRelevante(self) then
             return old(self, ...)
         end
+
+        metodo = metodoDe(self, metodo)
         if metodo ~= "FireServer" and metodo ~= "InvokeServer"
             and metodo ~= "FireServerAsync" then
             return old(self, ...)
@@ -317,63 +347,56 @@ local function instalarHookRemotes()
         return table.unpack(resultado, 1, resultado.n)
     end
 
-    -- Porta A: hookmetamethod. Devolve o original, então dá para delegar sem
-    -- quebrar nada — é o caminho padrão em Xeno, Delta e derivados.
-    if CAP.hookmetamethod and CAP.getnamecall then
-        local original
-        local ok = pcall(function()
-            original = CAP.hookmetamethod(game, "__namecall", function(self, ...)
-                return tratar(original, self, CAP.getnamecall(), ...)
-            end)
-        end)
-        if ok and original then
-            avisar("hook via hookmetamethod")
-            hooksInstalados.namecall = {
-                desfazer = function()
-                    pcall(CAP.hookmetamethod, game, "__namecall", original)
-                end,
-            }
-            return true
-        end
-    end
-
-    -- Porta B: metatable na mão. Mesma ideia, só que restaurável de fato.
-    if CAP.getrawmetatable and CAP.setreadonly then
-        local ok = pcall(function()
+    -- Porta 1: metatable na mão. É a mais restaurável e a que preserva retorno.
+    if CAP.getrawmetatable then
+        local ok, erro = pcall(function()
             local mt = CAP.getrawmetatable(game)
+            if type(mt) ~= "table" then
+                error("getrawmetatable devolveu " .. type(mt))
+            end
+
             local old = mt.__namecall
-            if not old then error("__namecall ausente") end
+            if type(old) ~= "function" then
+                error("__namecall não é função (" .. type(old) .. ")")
+            end
 
             local novo = function(self, ...)
-                return tratar(old, self, CAP.getnamecall and CAP.getnamecall() or "?", ...)
+                return tratar(old, self, CAP.getnamecall and CAP.getnamecall() or nil, ...)
             end
             if CAP.newcclosure then novo = CAP.newcclosure(novo) end
 
-            CAP.setreadonly(mt, false)
+            if CAP.setreadonly then CAP.setreadonly(mt, false) end
             mt.__namecall = novo
-            CAP.setreadonly(mt, true)
+            if CAP.setreadonly then CAP.setreadonly(mt, true) end
 
             hooksInstalados.namecall = {
                 desfazer = function()
                     pcall(function()
-                        CAP.setreadonly(mt, false)
+                        if CAP.setreadonly then CAP.setreadonly(mt, false) end
                         mt.__namecall = old
-                        CAP.setreadonly(mt, true)
+                        if CAP.setreadonly then CAP.setreadonly(mt, true) end
                     end)
                 end,
             }
         end)
+
         if ok then
+            registrarTentativa("getrawmetatable", true)
             avisar("hook via getrawmetatable")
             return true
         end
+        registrarTentativa("getrawmetatable", false, erro)
+    else
+        registrarTentativa("getrawmetatable", false, "indisponível")
     end
 
-    -- Porta C: hookfunction direto nos métodos do remote
+    -- Porta 2: hookfunction/replaceclosure em cada método de remote.
     if CAP.hookfunction then
         local alvo = pastaRemotes()
-        if alvo then
-            local ok = pcall(function()
+        if not alvo then
+            registrarTentativa("hookfunction", false, "pasta de remotes não encontrada")
+        else
+            local ok, erro = pcall(function()
                 for _, inst in ipairs(alvo:GetChildren()) do
                     if inst:IsA("RemoteEvent") then
                         local original = inst.FireServer
@@ -388,14 +411,29 @@ local function instalarHookRemotes()
                     end
                 end
             end)
+
             if ok then
+                registrarTentativa("hookfunction", true)
                 avisar("hook via hookfunction no remote")
                 return true
             end
+            registrarTentativa("hookfunction", false, erro)
         end
+    else
+        registrarTentativa("hookfunction", false, "indisponível")
     end
 
     return false
+end
+
+-- Re-tenta instalar os hooks e imprime o motivo exato de cada tentativa.
+local function tentarHooks()
+    local ok = instalarHookRemotes()
+    print("[Gravador] tentativa de hook:")
+    for nome, resultado in pairs(HOOK_DIAG) do
+        print(("  %-16s %s"):format(nome, resultado))
+    end
+    return ok
 end
 
 local function observarRemotesNovos()
@@ -621,7 +659,9 @@ local function dumparGui(forcar)
     end
 
     flush()
-    print(("[Gravador] %d GUI(s) dumpada(s)"):format(total))
+    if total > 0 then
+        print(("[Gravador] %d GUI(s) dumpada(s)"):format(total))
+    end
     return total
 end
 
@@ -751,6 +791,12 @@ local function diagnostico()
         print(("  %-18s %s"):format(nome, CAP[nome == "getnamecallmethod" and "getnamecall"
             or nome] and "ok" or "—"))
     end
+    if next(HOOK_DIAG) then
+        print("  --- hooks ---")
+        for nome, resultado in pairs(HOOK_DIAG) do
+            print(("  %-18s %s"):format(nome, resultado))
+        end
+    end
     print("==============================================")
     print("")
 
@@ -766,6 +812,9 @@ local function diagnostico()
         for _, r in ipairs(pastaRemotes():GetChildren()) do
             table.insert(texto, ("  %s (%s)"):format(r.Name, r.ClassName))
         end
+    end
+    for nome, resultado in pairs(HOOK_DIAG) do
+        table.insert(texto, ("hook %s = %s"):format(nome, resultado))
     end
     return table.concat(texto, "\n")
 end
@@ -896,7 +945,7 @@ local function iniciar()
     diagnostico()
 
     if CONFIG.hookRemotes then
-        local ok = instalarHookRemotes()
+        local ok = tentarHooks()
         avisar(ok and "hooks de remote instalados"
             or "não consegui instalar hooks — o log de remotes virá vazio")
     end
@@ -938,6 +987,7 @@ local API = {
     copiarTudo = copiarTudo,
     salvarTudo = salvarTudo,
     diagnostico = diagnostico,
+    tentarHooks = tentarHooks,
     listarArquivos = listarArquivos,
     lerSePequeno = lerSePequeno,
     config = CONFIG,
@@ -956,6 +1006,7 @@ _G.dumparGui = dumparGui
 _G.copiarGui = copiarGui
 _G.copiarTudo = copiarTudo
 _G.diagnostico = diagnostico
+_G.tentarHooks = tentarHooks
 _G.listarArquivos = listarArquivos
 
 iniciar()
