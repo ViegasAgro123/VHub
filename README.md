@@ -24,6 +24,8 @@ loadstring(game:HttpGet("https://raw.githubusercontent.com/ViegasAgro123/VHub/ma
 |---|---|
 | `loader.lua` | Stub curto. Busca `aotr/main.lua` e executa. É o que você cola. |
 | `aotr/main.lua` | O script completo, auto-contido. |
+| `diagnose/extract.lua` | Captura chunks de outros scripts (rodar antes do alvo). |
+| `diagnose/recorder.lua` | Grava remotes, GUI e estado do alvo em arquivo. |
 
 ## Atualização
 
