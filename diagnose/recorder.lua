@@ -230,6 +230,7 @@ local ARQ_REMOTES = "vhub_af_remotes_" .. STAMP .. ".log"
 local ARQ_ESTADO  = "vhub_af_estado_" .. STAMP .. ".log"
 local ARQ_GUI     = "vhub_af_gui_" .. STAMP .. ".txt"
 local ARQ_RELATO  = "vhub_af_relatorio_" .. STAMP .. ".txt"
+local ARQ_HOOKS   = "vhub_af_hooks_" .. STAMP .. ".txt"
 
 local function escrever(nome, conteudo)
     if not CAP.writefile then return false end
@@ -423,7 +424,134 @@ local function instalarHookRemotes()
         registrarTentativa("hookfunction", false, "indisponível")
     end
 
+    -- Porta 3: hookmetamethod, mas só depois de validar a convenção de retorno
+    -- num table descartável. Se o executor devolver nil, não existe original
+    -- para delegar nem para restaurar — aí não instala nada.
+    if CAP.hookmetamethod then
+        local testeOk, testeErro = pcall(function()
+            local alvo = setmetatable({}, { __index = function() return 1 end })
+            local original = CAP.hookmetamethod(alvo, "__index", function(_, chave)
+                return chave
+            end)
+            if type(original) ~= "function" then
+                error("hookmetamethod não devolveu o original (" .. type(original) .. ")")
+            end
+        end)
+
+        if not testeOk then
+            registrarTentativa("hookmetamethod", false, testeErro)
+        else
+            local ok, erro = pcall(function()
+                local original
+                original = CAP.hookmetamethod(game, "__namecall", function(self, ...)
+                    if type(original) ~= "function" then
+                        error("VHub: hookmetamethod sem original", 0)
+                    end
+                    return tratar(original, self,
+                        CAP.getnamecall and CAP.getnamecall() or nil, ...)
+                end)
+                if type(original) ~= "function" then
+                    error("hookmetamethod devolveu " .. type(original))
+                end
+                hooksInstalados.namecall = {
+                    desfazer = function()
+                        pcall(CAP.hookmetamethod, game, "__namecall", original)
+                    end,
+                }
+            end)
+
+            if ok then
+                registrarTentativa("hookmetamethod", true)
+                avisar("hook via hookmetamethod")
+                return true
+            end
+            registrarTentativa("hookmetamethod", false, erro)
+        end
+    else
+        registrarTentativa("hookmetamethod", false, "indisponível")
+    end
+
     return false
+end
+
+-- Lista o que o executor realmente expõe. Serve para descobrir nomes
+-- alternativos quando todas as portas de hook falham.
+local function varrerExecutor()
+    local nomes, vistos = {}, {}
+    local fonte = _G
+
+    if type(getgenv) == "function" then
+        local ok, g = pcall(getgenv)
+        if ok and type(g) == "table" then fonte = g end
+    end
+
+    local function adicionar(chave, valor, origem)
+        if type(chave) ~= "string" or type(valor) ~= "function" or vistos[chave] then
+            return
+        end
+        local baixo = chave:lower()
+        if baixo:find("hook") or baixo:find("meta") or baixo:find("closure")
+            or baixo:find("readonly") or baixo:find("namecall")
+            or baixo:find("executor") or baixo:find("getgenv") then
+            vistos[chave] = true
+            table.insert(nomes, origem .. chave)
+        end
+    end
+
+    pcall(function()
+        for chave, valor in pairs(fonte) do adicionar(chave, valor, "") end
+    end)
+
+    pcall(function()
+        for chave, valor in pairs(debug) do adicionar(chave, valor, "debug.") end
+    end)
+
+    table.sort(nomes)
+    return nomes
+end
+
+-- Monta o laudo dos hooks, copia para a área de transferência e grava em disco.
+local function relatorioHooks()
+    local linhas = {}
+    local executavel = "?"
+    pcall(function()
+        if type(identifyexecutor) == "function" then executavel = identifyexecutor() end
+    end)
+
+    table.insert(linhas, "=== VHUB HOOK REPORT ===")
+    table.insert(linhas, "executor: " .. tostring(executavel))
+    table.insert(linhas, "remotes: " .. tostring(pastaRemotes()
+        and pastaRemotes():GetFullName() or "não encontrados"))
+
+    table.insert(linhas, "caps:")
+    for _, nome in ipairs({
+        "writefile", "hookmetamethod", "getrawmetatable", "setreadonly",
+        "getnamecallmethod", "newcclosure", "hookfunction", "setclipboard",
+        "gethui", "getgc",
+    }) do
+        local chave = (nome == "getnamecallmethod") and "getnamecall" or nome
+        table.insert(linhas, ("  %-18s %s"):format(nome, CAP[chave] and "ok" or "—"))
+    end
+
+    table.insert(linhas, "tentativas:")
+    for nome, resultado in pairs(HOOK_DIAG) do
+        table.insert(linhas, ("  %-18s %s"):format(nome, resultado))
+    end
+
+    table.insert(linhas, "funções do executor (filtradas):")
+    local encontradas = varrerExecutor()
+    if #encontradas == 0 then
+        table.insert(linhas, "  (nada encontrado)")
+    end
+    for _, nome in ipairs(encontradas) do
+        table.insert(linhas, "  " .. nome)
+    end
+
+    local texto = table.concat(linhas, "\n")
+    escrever(ARQ_HOOKS, texto)
+    if CAP.setclipboard then pcall(CAP.setclipboard, texto) end
+    print(texto)
+    return texto
 end
 
 -- Re-tenta instalar os hooks e imprime o motivo exato de cada tentativa.
@@ -432,6 +560,10 @@ local function tentarHooks()
     print("[Gravador] tentativa de hook:")
     for nome, resultado in pairs(HOOK_DIAG) do
         print(("  %-16s %s"):format(nome, resultado))
+    end
+    if not ok then
+        relatorioHooks()
+        avisar("laudo dos hooks copiado — cole aqui se puder")
     end
     return ok
 end
@@ -988,6 +1120,7 @@ local API = {
     salvarTudo = salvarTudo,
     diagnostico = diagnostico,
     tentarHooks = tentarHooks,
+    relatorioHooks = relatorioHooks,
     listarArquivos = listarArquivos,
     lerSePequeno = lerSePequeno,
     config = CONFIG,
@@ -996,6 +1129,7 @@ local API = {
         estado = ARQ_ESTADO,
         gui = ARQ_GUI,
         relatorio = ARQ_RELATO,
+        hooks = ARQ_HOOKS,
     },
 }
 _G.VHUB_REC = API
@@ -1007,6 +1141,7 @@ _G.copiarGui = copiarGui
 _G.copiarTudo = copiarTudo
 _G.diagnostico = diagnostico
 _G.tentarHooks = tentarHooks
+_G.relatorioHooks = relatorioHooks
 _G.listarArquivos = listarArquivos
 
 iniciar()
