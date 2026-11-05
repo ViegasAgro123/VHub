@@ -58,8 +58,35 @@ local CONFIG = {
 -- ── Capabilities: cada executor expõe um subconjunto ─────────────────────────
 
 local function pegarGlobal(nome)
-    local ok, valor = pcall(function() return _G[nome] end)
-    if ok and type(valor) == "function" then return valor end
+    -- Três rotas: _G (Synapse/Delta), getgenv (Xeno e afins) e resolução direta
+    -- como global. Alguns executores criam um _G novo por script, e aí só a
+    -- terceira rota acha a função.
+    local env
+    pcall(function()
+        local g = getgenv()
+        if type(g) == "table" then env = g end
+    end)
+    if not env then
+        pcall(function()
+            local e = getfenv(0)
+            if type(e) == "table" then env = e end
+        end)
+    end
+
+    local rotas = {
+        function() return _G[nome] end,
+        function() return env and env[nome] end,
+        function()
+            local f = loadstring("return " .. nome)
+            if not f then return nil end
+            return f()
+        end,
+    }
+
+    for _, rota in ipairs(rotas) do
+        local ok, valor = pcall(rota)
+        if ok and type(valor) == "function" then return valor end
+    end
     return nil
 end
 
@@ -78,6 +105,10 @@ local CAP = {
     setclipboard    = pegarGlobal("setclipboard"),
     gethui          = pegarGlobal("gethui"),
     getgc           = pegarGlobal("getgc"),
+    request         = pegarGlobal("request"),
+    syn_request     = pegarGlobal("syn.request"),
+    http_request    = pegarGlobal("http_request"),
+    http_post       = pegarGlobal("http.post"),
 }
 
 -- Nomes alternativos: cada executor batiza a mesma coisa de um jeito.
@@ -554,6 +585,112 @@ local function relatorioHooks()
     return texto
 end
 
+-- ── Telemetria: canal fora do F9 ─────────────────────────────────────────────
+-- O console do executor não dá para copiar. O laudo vai por HTTP para um
+-- tópico ntfy e a leitura é feita por fora: https://ntfy.sh/<topico>/json?poll=1
+
+local NTFY = "vhub-aotr-captura-9f42"
+
+local function httpPost(url, corpo)
+    local candidatos = {
+        { nome = "request", fn = CAP.request },
+        { nome = "http_request", fn = CAP.http_request },
+        { nome = "syn.request", fn = CAP.syn_request },
+        { nome = "http.post", fn = CAP.http_post },
+    }
+
+    for _, candidato in ipairs(candidatos) do
+        if candidato.fn then
+            local ok, resposta = pcall(function()
+                if candidato.nome == "http.post" then
+                    return candidato.fn(url, corpo, "text/plain")
+                end
+                return candidato.fn({
+                    Url = url,
+                    Method = "POST",
+                    Body = corpo,
+                    Headers = { ["Content-Type"] = "text/plain" },
+                })
+            end)
+
+            if ok then
+                local codigo
+                if type(resposta) == "table" then
+                    codigo = resposta.StatusCode or resposta.Status or resposta.status
+                end
+                codigo = tonumber(codigo)
+                if not codigo or codigo < 400 then
+                    return true, candidato.nome
+                end
+            end
+        end
+    end
+    return false
+end
+
+local function enviarTexto(texto, rotulo)
+    -- ntfy corta mensagem grande; fatia em pedaços com cabeçalho de ordem.
+    local limite = 3300
+    local pedacos = {}
+    for i = 1, #texto, limite do
+        table.insert(pedacos, texto:sub(i, i + limite - 1))
+    end
+    if #pedacos == 0 then pedacos = { "" } end
+
+    local enviados = 0
+    for indice, pedaco in ipairs(pedacos) do
+        local corpo = ("[%s] %d/%d\n%s"):format(tostring(rotulo or "?"),
+            indice, #pedacos, pedaco)
+        local ok, via = httpPost("https://ntfy.sh/" .. NTFY, corpo)
+        if not ok then
+            return false, enviados
+        end
+        enviados = enviados + 1
+        if indice < #pedacos then task.wait(0.3) end
+    end
+    return true, enviados
+end
+
+local function telemetria(rotulo)
+    local linhas = {}
+    local executavel = "?"
+    pcall(function()
+        if type(identifyexecutor) == "function" then executavel = identifyexecutor() end
+    end)
+
+    table.insert(linhas, "rotulo: " .. tostring(rotulo or "?"))
+    table.insert(linhas, "executor: " .. tostring(executavel))
+    table.insert(linhas, "lugar: " .. tostring(game.PlaceId) .. " / " .. tostring(game.JobId))
+    table.insert(linhas, "tempo: " .. os.date("%d/%m/%Y %H:%M:%S"))
+    table.insert(linhas, "remotes: " .. tostring(pastaRemotes() and "ok" or "não encontrados"))
+    table.insert(linhas, "capturados: " .. tostring(#REMOTES))
+    table.insert(linhas, "guis: " .. tostring(#GUI_DUMPS))
+
+    table.insert(linhas, "caps:")
+    for _, nome in ipairs({
+        "writefile", "hookmetamethod", "getrawmetatable", "setreadonly",
+        "getnamecallmethod", "newcclosure", "hookfunction", "setclipboard",
+        "gethui", "getgc", "request", "http_request",
+    }) do
+        local chave = (nome == "getnamecallmethod") and "getnamecall" or nome
+        table.insert(linhas, ("  %-18s %s"):format(nome, CAP[chave] and "ok" or "—"))
+    end
+
+    table.insert(linhas, "hooks:")
+    for nome, resultado in pairs(HOOK_DIAG) do
+        table.insert(linhas, ("  %-18s %s"):format(nome, resultado))
+    end
+
+    local texto = table.concat(linhas, "\n")
+    local ok, via = enviarTexto(texto, rotulo or "estado")
+    if ok then
+        avisar(("telemetria enviada (%d parte(s))"):format(via))
+    else
+        avisar("telemetria indisponível (sem request/http.request)")
+    end
+    return ok
+end
+
 -- Re-tenta instalar os hooks e imprime o motivo exato de cada tentativa.
 local function tentarHooks()
     local ok = instalarHookRemotes()
@@ -561,8 +698,12 @@ local function tentarHooks()
     for nome, resultado in pairs(HOOK_DIAG) do
         print(("  %-16s %s"):format(nome, resultado))
     end
-    if not ok then
+
+    if ok then
+        pcall(telemetria, "hooks ok")
+    else
         relatorioHooks()
+        pcall(telemetria, "hooks falharam")
         avisar("laudo dos hooks copiado — cole aqui se puder")
     end
     return ok
@@ -990,12 +1131,14 @@ local function salvarTudo(nome)
         table.insert(partes, table.concat(ESTADO, "\n"))
     end
 
-    local ok = escrever(nome, table.concat(partes, "\n"))
+    local texto = table.concat(partes, "\n")
+    local ok = escrever(nome, texto)
     if ok then
         print(("[Gravador] relatório salvo: %s"):format(nome))
     else
-        print("[Gravador] writefile indisponível — use copiarTudo() com setclipboard")
+        print("[Gravador] writefile indisponível — mandando por telemetria")
     end
+    pcall(enviarTexto, texto, "relatorio")
     return ok
 end
 
@@ -1080,6 +1223,8 @@ local function iniciar()
         local ok = tentarHooks()
         avisar(ok and "hooks de remote instalados"
             or "não consegui instalar hooks — o log de remotes virá vazio")
+    else
+        pcall(telemetria, "inicio sem hook")
     end
 
     observarRemotesNovos()
@@ -1121,6 +1266,7 @@ local API = {
     diagnostico = diagnostico,
     tentarHooks = tentarHooks,
     relatorioHooks = relatorioHooks,
+    telemetria = telemetria,
     listarArquivos = listarArquivos,
     lerSePequeno = lerSePequeno,
     config = CONFIG,
@@ -1142,6 +1288,7 @@ _G.copiarTudo = copiarTudo
 _G.diagnostico = diagnostico
 _G.tentarHooks = tentarHooks
 _G.relatorioHooks = relatorioHooks
+_G.telemetria = telemetria
 _G.listarArquivos = listarArquivos
 
 iniciar()
