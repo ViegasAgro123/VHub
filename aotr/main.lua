@@ -437,6 +437,213 @@ local __chunk = assert(loadstring(__src), "falha ao compilar core/game")
 return __chunk(__req)
 end
 
+-- ── core/layout ───────────────────────────────────────────────
+MODULES["core/layout"] = function()
+local __src = [=[
+--[[
+    VHub · Layout
+    Arquivo: src/core/layout.lua
+
+    O Roblox não tem `grid-template-columns: repeat(auto-fill, minmax(...))`.
+    O UIGridLayout exige CellSize fixo — e foi exatamente por isso que os cinco
+    cartões da Home ficaram maiores que o container e se sobrepuseram.
+
+    Este módulo reproduz o comportamento do CSS do AirFlow:
+
+        repeat(auto-fill, minmax(196px, 1fr))
+        gap: 16px
+
+    Traduzindo: dado o espaço disponível, quantas colunas de no mínimo N cabem?
+    O resto do espaço é dividido igualmente entre elas. Se o container muda de
+    largura, tudo se recalcula — em vez de estourar.
+
+    Uso:
+        Layout.autoGrid(container, { minCell = 140, cellHeight = 74, gap = 8 })
+        -- depois de adicionar os filhos, chame :refresh()
+--]]
+
+
+-- injetado pelo bundler: resolvedor de módulos no escopo deste chunk
+local __req = ...
+local Layout = {}
+
+-- ── Utilitário ───────────────────────────────────────────────────────────────
+
+-- Quantas colunas de largura `minCell` cabem em `total`, com `gap` entre elas.
+-- Devolve colunas e a largura exata de cada uma, já dividindo a sobra.
+--
+-- A conta: n colunas ocupam n*cel + (n-1)*gap. Resolvendo para n:
+--   n = floor((total + gap) / (minCell + gap))
+-- E a largura de cada uma vira (total - (n-1)*gap) / n, que é o `1fr` do CSS.
+local function fit(total, minCell, gap)
+    if total <= 0 or minCell <= 0 then return 1, minCell end
+
+    local n = math.floor((total + gap) / (minCell + gap))
+    n = math.max(1, n)
+
+    local cell = math.floor((total - (n - 1) * gap) / n)
+    return n, cell
+end
+Layout.fit = fit
+
+-- ── Grade automática ─────────────────────────────────────────────────────────
+
+-- Cria um Frame com UIGridLayout que se comporta como o auto-fill do CSS.
+--
+-- opts:
+--   parent     : onde montar
+--   minCell    : largura mínima de cada célula (padrão 140)
+--   cellHeight : altura de cada célula
+--   gap        : espaço entre células
+--   order      : LayoutOrder
+--
+-- Devolve { instance, grid, refresh(), setCells() }
+function Layout.autoGrid(opts)
+    local minCell = opts.minCell or 140
+    local gap = opts.gap or 8
+    local cellHeight = opts.cellHeight or 74
+
+    local container = Instance.new("Frame")
+    container.Name = opts.name or "AutoGrid"
+    container.Size = UDim2.new(1, 0, 0, cellHeight)
+    container.BackgroundTransparency = 1
+    container.LayoutOrder = opts.order or 0
+    container.Parent = opts.parent
+
+    local grid = Instance.new("UIGridLayout")
+    grid.CellSize = UDim2.new(0, minCell, 0, cellHeight)
+    grid.CellPadding = UDim2.new(0, gap, 0, gap)
+    grid.SortOrder = Enum.SortOrder.LayoutOrder
+    grid.FillDirection = Enum.FillDirection.Horizontal
+    grid.HorizontalAlignment = Enum.HorizontalAlignment.Left
+    grid.Parent = container
+
+    local lastWidth, lastCount = -1, -1
+
+    local function countCells()
+        local n = 0
+        for _, child in ipairs(container:GetChildren()) do
+            if child:IsA("GuiObject") and child.Visible then n = n + 1 end
+        end
+        return n
+    end
+
+    -- Recalcula colunas, largura e altura. Idempotente: se nada mudou, sai.
+    -- A altura é o ponto crítico: com UIGridLayout a grade quebra linha, mas o
+    -- Frame não cresce sozinho — era isso que fazia os cartões vazarem por cima
+    -- da seção seguinte.
+    local function refresh()
+        local total = container.AbsoluteSize.X
+        local cells = countCells()
+        if total <= 0 or (total == lastWidth and cells == lastCount) then return end
+        lastWidth, lastCount = total, cells
+
+        local cols, cell = fit(total, minCell, gap)
+        grid.CellSize = UDim2.new(0, cell, 0, cellHeight)
+
+        local rows = math.max(1, math.ceil(cells / cols))
+        local height = rows * cellHeight + (rows - 1) * gap
+        if math.abs(container.Size.Y.Offset - height) >= 1 then
+            container.Size = UDim2.new(1, 0, 0, height)
+        end
+    end
+
+    container:GetPropertyChangedSignal("AbsoluteSize"):Connect(refresh)
+
+    -- Recalcula também quando um filho entra, porque a primeira medição pode
+    -- ter acontecido antes do container existir de fato.
+    container.ChildAdded:Connect(function()
+        task.defer(refresh)
+    end)
+
+    task.defer(refresh)
+
+    return {
+        instance = container,
+        grid = grid,
+        refresh = refresh,
+        setCells = function(n, h)
+            if n then minCell = n end
+            if h then cellHeight = h; grid.CellSize = UDim2.new(0, grid.CellSize.X.Offset, 0, h) end
+            lastWidth = -1
+            refresh()
+        end,
+    }
+end
+
+-- ── Lista vertical ───────────────────────────────────────────────────────────
+
+-- Lista empilhada com espaçamento consistente e altura automática.
+function Layout.list(parent, padding, name)
+    local f = Instance.new("Frame")
+    f.Name = name or "List"
+    f.Size = UDim2.new(1, 0, 0, 0)
+    f.AutomaticSize = Enum.AutomaticSize.Y
+    f.BackgroundTransparency = 1
+    f.Parent = parent
+
+    local l = Instance.new("UIListLayout")
+    l.SortOrder = Enum.SortOrder.LayoutOrder
+    l.Padding = UDim.new(0, padding or 3)
+    l.Parent = f
+
+    return f
+end
+
+-- ── Barra de rolagem ─────────────────────────────────────────────────────────
+
+function Layout.scroll(parent, padH, padV)
+    local s = Instance.new("ScrollingFrame")
+    s.Name = "Scroll"
+    s.Size = UDim2.fromScale(1, 1)
+    s.BackgroundTransparency = 1
+    s.BorderSizePixel = 0
+    s.ScrollBarThickness = 5
+    s.ScrollBarImageColor3 = Color3.fromRGB(70, 72, 78)
+    s.ScrollBarImageTransparency = 0.3
+    s.CanvasSize = UDim2.new()
+    s.AutomaticCanvasSize = Enum.AutomaticSize.Y
+    s.ScrollingDirection = Enum.ScrollingDirection.Y
+    s.Parent = parent
+
+    local p = Instance.new("UIPadding")
+    p.PaddingTop = UDim.new(0, padV or 14)
+    p.PaddingBottom = UDim.new(0, padV or 14)
+    p.PaddingLeft = UDim.new(0, padH or 16)
+    p.PaddingRight = UDim.new(0, padH or 16)
+    p.Parent = s
+
+    return s
+end
+
+-- ── Divisão em colunas iguais ────────────────────────────────────────────────
+-- Para grades de largura fixa conhecida (2 ou 3 colunas), onde auto-fill não é
+-- o comportamento desejado.
+
+function Layout.columns(parent, count, gap, cellHeight, order)
+    local f = Instance.new("Frame")
+    f.Size = UDim2.new(1, 0, 0, cellHeight)
+    f.BackgroundTransparency = 1
+    f.LayoutOrder = order or 0
+    f.Parent = parent
+
+    local g = Instance.new("UIGridLayout")
+    local width = math.floor((1 / count) * 1000) / 10   -- escala em %
+    g.CellSize = UDim2.new(width / 100, -gap * (count - 1) / count, 0, cellHeight)
+    g.CellPadding = UDim2.new(0, gap, 0, gap)
+    g.SortOrder = Enum.SortOrder.LayoutOrder
+    g.Parent = f
+
+    return f, g
+end
+
+return Layout
+
+]=]
+local __chunk = assert(loadstring(__src), "falha ao compilar core/layout")
+return __chunk(__req)
+end
+
 -- ── core/state ────────────────────────────────────────────────
 MODULES["core/state"] = function()
 local __src = [=[
@@ -3211,7 +3418,7 @@ function Mission.autoKillTick()
     end
 
     if not target then
-        if State.flags.autoTP then Mission.tpToTitan() end
+        if State.flags.autoTPToTitan then Mission.tpToTitan() end
         return
     end
 
@@ -4156,6 +4363,7 @@ local State = __req("core/state")
 local Util = __req("core/util")
 local Game = __req("core/game")
 local Stats = __req("core/stats")
+local Layout = __req("core/layout")
 
 local UI = {}
 
@@ -4725,16 +4933,14 @@ local function buildHome()
     local statsSec = Widget.section({ parent = page, text = "Ao vivo" })
     statsSec.instance.LayoutOrder = 2
 
-    local grid = Widget.new("Frame", {
-        Size = UDim2.new(1, 0, 0, Theme.metric.statCardH),
-        BackgroundTransparency = 1,
-        Parent = statsSec.body,
-    })
-    Widget.new("UIGridLayout", {
-        CellSize = UDim2.new(0, 143, 0, Theme.metric.statCardH),
-        CellPadding = UDim2.new(0, 8, 0, 0),
-        SortOrder = Enum.SortOrder.LayoutOrder,
-        Parent = grid,
+    -- Grade automática: 5 cartões em 143px fixos somavam 747px dentro de ~460px
+    -- úteis. Agora quebram em linhas e o container cresce junto.
+    local grid = Layout.autoGrid({
+        parent = statsSec.body,
+        minCell = 140,
+        cellHeight = Theme.metric.statCardH,
+        gap = 8,
+        name = "StatGrid",
     })
 
     local defs = {
@@ -4746,7 +4952,7 @@ local function buildHome()
     }
     for i, d in ipairs(defs) do
         local card = Widget.statCard({
-            parent = grid,
+            parent = grid.instance,
             caption = d.caption,
             value = "—",
         })
