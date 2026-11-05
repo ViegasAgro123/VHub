@@ -243,6 +243,7 @@ end
 -- ── Estado em memória ────────────────────────────────────────────────────────
 
 local REMOTES = {}
+local CLIQUES = {}
 local ESTADO = {}
 local GUI_DUMPS = {}
 local GUIS_VISTAS = {}
@@ -262,6 +263,7 @@ local ARQ_ESTADO  = "vhub_af_estado_" .. STAMP .. ".log"
 local ARQ_GUI     = "vhub_af_gui_" .. STAMP .. ".txt"
 local ARQ_RELATO  = "vhub_af_relatorio_" .. STAMP .. ".txt"
 local ARQ_HOOKS   = "vhub_af_hooks_" .. STAMP .. ".txt"
+local ARQ_CLIQUES = "vhub_af_cliques_" .. STAMP .. ".log"
 
 local function escrever(nome, conteudo)
     if not CAP.writefile then return false end
@@ -280,6 +282,9 @@ local function flush()
     end
     if #GUI_DUMPS > 0 then
         escrever(ARQ_GUI, table.concat(GUI_DUMPS, "\n\n"))
+    end
+    if #CLIQUES > 0 then
+        escrever(ARQ_CLIQUES, table.concat(CLIQUES, "\n") .. "\n")
     end
 end
 
@@ -358,25 +363,39 @@ local function instalarHookRemotes()
     end
 
     -- Núcleo comum: decide se interessa, mede e devolve os retornos intactos.
-    local function tratar(old, self, metodo, ...)
-        if not ehRemoteRelevante(self) then
-            return old(self, ...)
-        end
+    -- `emHook` evita recursão: ehRemoteRelevante chama :IsA, que é namecall.
+    local emHook = false
 
-        metodo = metodoDe(self, metodo)
-        if metodo ~= "FireServer" and metodo ~= "InvokeServer"
-            and metodo ~= "FireServerAsync" then
-            return old(self, ...)
-        end
+    local function tratar(old, self, metodo, ...)
+        if emHook then return old(self, ...) end
 
         local args = table.pack(...)
-        local inicio = os.clock()
-        local resultado = table.pack(old(self, ...))
-        local dt = os.clock() - inicio
+        emHook = true
+        local resultados = table.pack(pcall(function()
+            if not ehRemoteRelevante(self) then
+                return old(self, table.unpack(args, 1, args.n))
+            end
 
-        local ret = resultado.n > 1 and resultado or resultado[1]
-        pcall(anotar, self.Name, metodo, args, ret, dt, self.ClassName)
-        return table.unpack(resultado, 1, resultado.n)
+            metodo = metodoDe(self, metodo)
+            if metodo ~= "FireServer" and metodo ~= "InvokeServer"
+                and metodo ~= "FireServerAsync" then
+                return old(self, table.unpack(args, 1, args.n))
+            end
+
+            local inicio = os.clock()
+            local resultado = table.pack(old(self, table.unpack(args, 1, args.n)))
+            local dt = os.clock() - inicio
+
+            local ret = resultado.n > 1 and resultado or resultado[1]
+            pcall(anotar, self.Name, metodo, args, ret, dt, self.ClassName)
+            return table.unpack(resultado, 1, resultado.n)
+        end))
+        emHook = false
+
+        if not resultados[1] then
+            return old(self, table.unpack(args, 1, args.n))
+        end
+        return table.unpack(resultados, 2, resultados.n)
     end
 
     -- Porta 1: metatable na mão. É a mais restaurável e a que preserva retorno.
@@ -453,6 +472,40 @@ local function instalarHookRemotes()
         end
     else
         registrarTentativa("hookfunction", false, "indisponível")
+    end
+
+    -- Porta 2.5: getmetatable padrão (Xeno expõe este, não o getrawmetatable).
+    if type(getmetatable) == "function" then
+        local ok, erro = pcall(function()
+            local mt = getmetatable(game)
+            if type(mt) ~= "table" then
+                error("getmetatable(game) devolveu " .. type(mt))
+            end
+            local old = mt.__namecall
+            if type(old) ~= "function" then
+                error("__namecall não é função (" .. type(old) .. ")")
+            end
+
+            local novo = function(self, ...)
+                return tratar(old, self, CAP.getnamecall and CAP.getnamecall() or nil, ...)
+            end
+            if CAP.newcclosure then novo = CAP.newcclosure(novo) end
+
+            mt.__namecall = novo
+
+            hooksInstalados.namecall = {
+                desfazer = function()
+                    pcall(function() mt.__namecall = old end)
+                end,
+            }
+        end)
+
+        if ok then
+            registrarTentativa("getmetatable", true)
+            avisar("hook via getmetatable")
+            return true
+        end
+        registrarTentativa("getmetatable", false, erro)
     end
 
     -- Porta 3: hookmetamethod, mas só depois de validar a convenção de retorno
@@ -919,6 +972,82 @@ local function marcarGuisExistentes()
     end
 end
 
+local GUIS_MONITORADAS = {}
+local GUIS_SUJAS = {}
+local BOTOES_VISTOS = setmetatable({}, { __mode = "k" })
+
+local function ligarClique(botao)
+    if BOTOES_VISTOS[botao] then return end
+    BOTOES_VISTOS[botao] = true
+    pcall(function()
+        botao.MouseButton1Click:Connect(function()
+            table.insert(CLIQUES, ("[+%8.3fs] clique: %s"):format(
+                os.clock() - T0, botao:GetFullName()))
+            flush()
+        end)
+    end)
+end
+
+-- Toda GUI nova ganha um vigia: quando um descendente nasce/morre, a GUI fica
+-- suja e o laço redumpa ela inteira. É assim que abas criadas sob demanda
+-- (Lobby, Settings) entram no arquivo sem eu pedir nada.
+local function monitorarGuis()
+    for _, g in ipairs(coletarGuis()) do
+        if not GUIS_MONITORADAS[g] then
+            GUIS_MONITORADAS[g] = true
+
+            pcall(function()
+                for _, d in ipairs(g:GetDescendants()) do
+                    if d:IsA("GuiButton") then ligarClique(d) end
+                end
+
+                g.DescendantAdded:Connect(function(d)
+                    GUIS_SUJAS[g] = true
+                    if d:IsA("GuiButton") then ligarClique(d) end
+                end)
+                g.DescendantRemoving:Connect(function()
+                    GUIS_SUJAS[g] = true
+                end)
+            end)
+        end
+    end
+end
+
+local function dumpSujas()
+    monitorarGuis()
+    for g in pairs(GUIS_SUJAS) do
+        GUIS_SUJAS[g] = nil
+        GUIS_VISTAS[g] = true
+        pcall(dumparInstancia, g, "GUI dinâmica")
+    end
+    flush()
+end
+
+-- Inventário compacto: só os textos visíveis, para mandar por telemetria.
+local function inventarioGui(limite)
+    limite = limite or 400
+    local linhas = {}
+
+    for _, g in ipairs(coletarGuis()) do
+        table.insert(linhas, "## " .. g.Name)
+        local vistos = {}
+        for _, d in ipairs(g:GetDescendants()) do
+            if #linhas >= limite then break end
+            local classe = d.ClassName
+            if (classe == "TextLabel" or classe == "TextButton" or classe == "TextBox")
+                and d.Text ~= "" then
+                local texto = d.Text:gsub("%s+", " "):sub(1, 90)
+                if not vistos[texto] then
+                    vistos[texto] = true
+                    table.insert(linhas, "  " .. texto)
+                end
+            end
+        end
+    end
+
+    return table.concat(linhas, "\n")
+end
+
 local function dumparGui(forcar)
     local alvos = coletarGuis()
     local total = 0
@@ -1095,6 +1224,12 @@ end
 local function salvarTudo(nome)
     nome = nome or ARQ_RELATO
 
+    -- Última fotografia de tudo que estiver aberto agora.
+    pcall(function()
+        monitorarGuis()
+        dumparGui(true)
+    end)
+
     local partes = {}
     table.insert(partes, "==============================================")
     table.insert(partes, "  VHUB · RELATÓRIO DO AIRFLOW")
@@ -1138,7 +1273,17 @@ local function salvarTudo(nome)
     else
         print("[Gravador] writefile indisponível — mandando por telemetria")
     end
-    pcall(enviarTexto, texto, "relatorio")
+    if #texto <= 20000 then
+        pcall(enviarTexto, texto, "relatorio")
+    else
+        pcall(enviarTexto, texto:sub(1, 20000), "relatorio cortado")
+    end
+    pcall(function()
+        enviarTexto(inventarioGui(), "textos")
+        if #CLIQUES > 0 then
+            enviarTexto(table.concat(CLIQUES, "\n"), "cliques")
+        end
+    end)
     return ok
 end
 
@@ -1238,6 +1383,7 @@ local function iniciar()
 
             if CONFIG.autoGui then
                 pcall(dumparGui)
+                pcall(dumpSujas)
             end
 
             if CONFIG.amostrar and os.clock() >= proximaAmostra then
@@ -1267,6 +1413,7 @@ local API = {
     tentarHooks = tentarHooks,
     relatorioHooks = relatorioHooks,
     telemetria = telemetria,
+    inventarioGui = inventarioGui,
     listarArquivos = listarArquivos,
     lerSePequeno = lerSePequeno,
     config = CONFIG,
@@ -1289,6 +1436,7 @@ _G.diagnostico = diagnostico
 _G.tentarHooks = tentarHooks
 _G.relatorioHooks = relatorioHooks
 _G.telemetria = telemetria
+_G.inventarioGui = inventarioGui
 _G.listarArquivos = listarArquivos
 
 iniciar()
