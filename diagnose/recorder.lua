@@ -53,6 +53,18 @@ local CONFIG = {
     maxNos        = 5000,
     flushSegundos = 3,
     todosRemotes  = false,  -- true = registra QUALQUER remote (mais ruidoso)
+    -- Teto do arquivo de GUI. A UI do jogo muda o tempo todo (vida, ping, FPS)
+    -- e redumpá-la gera dezenas de MB sem nenhuma informação nova. O que
+    -- interessa é a UI do script (CoreGui/HUI), que não é filtrada aqui.
+    limiteGuiMB   = 12,
+    -- ScreenGuis da UI do jogo: não entram no dump dinâmico nem no vigia.
+    guisIgnoradas = {
+        ["Interface"] = true, ["Fullscreen"] = true, ["DevConsoleMaster"] = true,
+        ["SystemScrim"] = true, ["Watermark"] = true, ["ShortcutBar"] = true,
+        ["Drawing"] = true, ["RobloxPromptGui"] = true, ["Chat"] = true,
+        ["PlayerList"] = true, ["ScreenshotsCarousel"] = true,
+        ["TeleportEffectGui"] = true, ["CaptureOverlay"] = true,
+    },
 }
 
 -- ── Capabilities: cada executor expõe um subconjunto ─────────────────────────
@@ -246,6 +258,8 @@ local REMOTES = {}
 local CLIQUES = {}
 local ESTADO = {}
 local GUI_DUMPS = {}
+local GUI_TOTAL_BYTES = 0
+local AVISOU_TETO_GUI = false
 local GUIS_VISTAS = {}
 local REMOTES_VISTOS = {}
 local eventos = 0
@@ -929,8 +943,21 @@ local function dumparInstancia(inst, titulo)
     table.insert(out, ("===== %s :: %s \"%s\" :: %s ====="):format(
         titulo or "dump", inst.ClassName, inst.Name, os.date("%H:%M:%S")))
     descreverNo(inst, out, 0, raiz, { n = 0 })
-    table.insert(GUI_DUMPS, table.concat(out, "\n"))
-    return table.concat(out, "\n")
+    local texto = table.concat(out, "\n")
+
+    local teto = (CONFIG.limiteGuiMB or 12) * 1024 * 1024
+    local manual = titulo == "GUI manual"
+    if not manual and GUI_TOTAL_BYTES + #texto > teto then
+        if not AVISOU_TETO_GUI then
+            AVISOU_TETO_GUI = true
+            avisar(("teto de GUI atingido (%d MB) — dump automático desligado; dumparGui(true) continua valendo"):format(CONFIG.limiteGuiMB))
+        end
+        return texto
+    end
+
+    GUI_TOTAL_BYTES = GUI_TOTAL_BYTES + #texto
+    table.insert(GUI_DUMPS, texto)
+    return texto
 end
 
 local function coletarGuis()
@@ -972,6 +999,19 @@ local function marcarGuisExistentes()
     end
 end
 
+-- UI do próprio jogo (vive em PlayerGui) muda a cada frame: vida, ping, FPS.
+-- Vigiar isso só infla o arquivo. A UI do script fica em CoreGui/HUI.
+local function ehUiDoJogo(g)
+    if CONFIG.guisIgnoradas[g.Name] then return true end
+    local ok, pg = pcall(function()
+        local pl = game:GetService("Players").LocalPlayer
+        return pl and pl:FindFirstChildOfClass("PlayerGui")
+    end)
+    if not ok or not pg then return false end
+    local ok2, dentro = pcall(function() return g:IsDescendantOf(pg) end)
+    return ok2 and dentro
+end
+
 local GUIS_MONITORADAS = {}
 local GUIS_SUJAS = {}
 local BOTOES_VISTOS = setmetatable({}, { __mode = "k" })
@@ -995,20 +1035,23 @@ local function monitorarGuis()
     for _, g in ipairs(coletarGuis()) do
         if not GUIS_MONITORADAS[g] then
             GUIS_MONITORADAS[g] = true
+            if ehUiDoJogo(g) then
+                GUIS_VISTAS[g] = true
+            else
+                pcall(function()
+                    for _, d in ipairs(g:GetDescendants()) do
+                        if d:IsA("GuiButton") then ligarClique(d) end
+                    end
 
-            pcall(function()
-                for _, d in ipairs(g:GetDescendants()) do
-                    if d:IsA("GuiButton") then ligarClique(d) end
-                end
-
-                g.DescendantAdded:Connect(function(d)
-                    GUIS_SUJAS[g] = true
-                    if d:IsA("GuiButton") then ligarClique(d) end
+                    g.DescendantAdded:Connect(function(d)
+                        GUIS_SUJAS[g] = true
+                        if d:IsA("GuiButton") then ligarClique(d) end
+                    end)
+                    g.DescendantRemoving:Connect(function()
+                        GUIS_SUJAS[g] = true
+                    end)
                 end)
-                g.DescendantRemoving:Connect(function()
-                    GUIS_SUJAS[g] = true
-                end)
-            end)
+            end
         end
     end
 end
@@ -1017,8 +1060,10 @@ local function dumpSujas()
     monitorarGuis()
     for g in pairs(GUIS_SUJAS) do
         GUIS_SUJAS[g] = nil
-        GUIS_VISTAS[g] = true
-        pcall(dumparInstancia, g, "GUI dinâmica")
+        if not ehUiDoJogo(g) then
+            GUIS_VISTAS[g] = true
+            pcall(dumparInstancia, g, "GUI dinâmica")
+        end
     end
     flush()
 end
@@ -1426,6 +1471,12 @@ local API = {
     },
 }
 _G.VHUB_REC = API
+-- getgenv() é o ambiente compartilhado entre abas do mesmo executor: é por aqui
+-- que um segundo script (outra aba, sem reexecutar o gravador) acha a API.
+pcall(function()
+    local g = getgenv()
+    if type(g) == "table" then g.VHUB_REC = API end
+end)
 
 -- Aliases em português, para digitar no console sem pensar.
 _G.salvarTudo = salvarTudo
