@@ -657,6 +657,13 @@ local __src = [=[
 
     `flags` são booleanos (ligado/desligado), `config` são parâmetros.
     Salvar e carregar mexe só nesses dois.
+
+    PERFIS NOMEADOS
+    ---------------
+    O arquivo vhub_config.json guarda a configuração ATIVA (o último estado).
+    vhub_profiles.json guarda perfis nomeados: cada um é um retrato de flags e
+    config. No carregamento, o perfil marcado como autoload tem prioridade sobre
+    a configuração ativa — é o comportamento do AirFlow ("Current autoload").
 --]]
 
 
@@ -731,6 +738,10 @@ State.config = {
 
     -- Nuca (tamanho de fábrica: Vector3.new(15, 9, 11))
     napeScale       = 1.5,
+    -- Tamanho absoluto em studs (maior dimensão). 0 desliga e usa napeScale.
+    -- O AirFlow usa 280; deixamos 0 de fábrica porque o padrão seguro é o
+    -- multiplicador, e 280 é uma escolha consciente do usuário.
+    napeSize        = 0,
     napeTransparency= 0.35,
 
     -- Local seguro
@@ -757,6 +768,12 @@ State.config = {
     espMaxDist      = 900,
     espColor        = "Vermelho",
     espThickness    = 1.4,
+
+    -- Menu / tema
+    menuScale       = 100,          -- porcentagem (70–140)
+    menuKey         = "RightControl",
+    themePreset     = "VHub",
+    accentColor     = "#E02D2D",    -- hex RGB da cor de destaque
 }
 
 -- ── Cores do ESP ─────────────────────────────────────────────────────────────
@@ -816,15 +833,61 @@ end
 -- ── Persistência ─────────────────────────────────────────────────────────────
 
 local CONFIG_PATH = "vhub_config.json"
+local PROFILES_PATH = "vhub_profiles.json"
+
+local function http()
+    return game:GetService("HttpService")
+end
+
+-- Cópia defensiva: gravar/ler JSON não pode compartilhar tabela com o estado
+-- vivo, senão uma alteração futura muda o retrato do perfil sem querer.
+local function copyTable(t)
+    local out = {}
+    if type(t) ~= "table" then return out end
+    for k, v in pairs(t) do
+        if type(v) == "table" then out[k] = copyTable(v) else out[k] = v end
+    end
+    return out
+end
+
+local function snapshot()
+    return {
+        flags = copyTable(State.flags),
+        config = copyTable(State.config),
+    }
+end
+
+-- Aplica dados externos com validação de tipo. É a única porta de entrada de
+-- configuração em disco: lixo de versão antiga não pode quebrar o script.
+local function applyData(data)
+    if type(data) ~= "table" then return false end
+    local applied = false
+
+    for k, v in pairs(data.flags or {}) do
+        if State.flags[k] ~= nil and type(v) == "boolean" then
+            State.flags[k] = v
+            applied = true
+        end
+    end
+    for k, v in pairs(data.config or {}) do
+        local current = State.config[k]
+        if current ~= nil and type(v) == type(current) then
+            if type(v) == "table" then
+                State.config[k] = copyTable(v)
+            else
+                State.config[k] = v
+            end
+            applied = true
+        end
+    end
+
+    return applied
+end
 
 function State.save()
     local ok = pcall(function()
         if not writefile then return end
-        local payload = {
-            flags = State.flags,
-            config = State.config,
-        }
-        writefile(CONFIG_PATH, game:GetService("HttpService"):JSONEncode(payload))
+        writefile(CONFIG_PATH, http():JSONEncode(snapshot()))
     end)
     return ok
 end
@@ -832,22 +895,161 @@ end
 function State.load()
     local ok, data = pcall(function()
         if not (isfile and isfile(CONFIG_PATH)) then return nil end
-        return game:GetService("HttpService"):JSONDecode(readfile(CONFIG_PATH))
+        return http():JSONDecode(readfile(CONFIG_PATH))
     end)
     if not ok or type(data) ~= "table" then return false end
 
-    for k, v in pairs(data.flags or {}) do
-        if State.flags[k] ~= nil and type(v) == "boolean" then
-            State.flags[k] = v
-        end
-    end
-    for k, v in pairs(data.config or {}) do
-        if State.config[k] ~= nil and type(v) == type(State.config[k]) then
-            State.config[k] = v
-        end
-    end
+    applyData(data)
     return true
 end
+
+-- ── Perfis nomeados ──────────────────────────────────────────────────────────
+
+local function readProfiles()
+    local data = { profiles = {}, autoload = nil }
+    local ok, decoded = pcall(function()
+        if not (isfile and isfile(PROFILES_PATH)) then return nil end
+        return http():JSONDecode(readfile(PROFILES_PATH))
+    end)
+
+    if ok and type(decoded) == "table" then
+        if type(decoded.profiles) == "table" then data.profiles = decoded.profiles end
+        if type(decoded.autoload) == "string" then data.autoload = decoded.autoload end
+    end
+    return data
+end
+
+local function writeProfiles(data)
+    local ok, err = pcall(function()
+        if not writefile then
+            error("executor sem writefile", 0)
+        end
+        writefile(PROFILES_PATH, http():JSONEncode(data))
+    end)
+    return ok, err
+end
+
+local function cleanName(name)
+    if type(name) ~= "string" then return "" end
+    return (name:gsub("^%s+", ""):gsub("%s+$", ""))
+end
+
+-- Lista de nomes, em ordem alfabética. A UI usa para o resumo e os testes.
+function State.profileList()
+    local data = readProfiles()
+    local names = {}
+    for name in pairs(data.profiles) do
+        if type(name) == "string" and name ~= "" then table.insert(names, name) end
+    end
+    table.sort(names)
+    return names
+end
+
+function State.profileExists(name)
+    name = cleanName(name)
+    if name == "" then return false end
+    return readProfiles().profiles[name] ~= nil
+end
+
+-- Retrato do estado atual, sem gravar. Útil para depuração e para a UI.
+function State.profileSnapshot()
+    return snapshot()
+end
+
+-- Cria ou substitui um perfil com o estado atual.
+function State.profileSave(name)
+    name = cleanName(name)
+    if name == "" then return false, "informe um nome de perfil" end
+    if #name > 40 then return false, "nome muito longo (máximo 40)" end
+
+    local data = readProfiles()
+    local shot = snapshot()
+    shot.savedAt = os.time()
+    data.profiles[name] = shot
+
+    local ok, err = writeProfiles(data)
+    if not ok then return false, tostring(err) end
+    return true
+end
+
+-- Cria um perfil NOVO com o estado atual. Diferente de profileSave, recusa
+-- substituir um nome existente — é a semântica de "Create" do AirFlow, que não
+-- deixa sobrescrever configuração sem querer.
+function State.profileCreate(name)
+    name = cleanName(name)
+    if name == "" then return false, "informe um nome de perfil" end
+    if State.profileExists(name) then
+        return false, "já existe um perfil com esse nome"
+    end
+    return State.profileSave(name)
+end
+
+-- Carrega um perfil no estado ativo. Não grava em disco: a configuração ativa
+-- é persistida no shutdown, como sempre.
+function State.profileLoad(name)
+    name = cleanName(name)
+    if name == "" then return false, "informe um nome de perfil" end
+
+    local data = readProfiles()
+    local profile = data.profiles[name]
+    if type(profile) ~= "table" then return false, "perfil não encontrado" end
+
+    applyData(profile)
+    return true
+end
+
+function State.profileDelete(name)
+    name = cleanName(name)
+    if name == "" then return false, "informe um nome de perfil" end
+
+    local data = readProfiles()
+    if data.profiles[name] == nil then return false, "perfil não encontrado" end
+
+    data.profiles[name] = nil
+    if data.autoload == name then data.autoload = nil end
+
+    local ok, err = writeProfiles(data)
+    if not ok then return false, tostring(err) end
+    return true
+end
+
+-- Define (ou limpa, com nil/"") o perfil carregado automaticamente na entrada.
+function State.profileSetAutoload(name)
+    local data = readProfiles()
+
+    if name == nil or cleanName(name) == "" then
+        data.autoload = nil
+        local ok, err = writeProfiles(data)
+        if not ok then return false, tostring(err) end
+        return true
+    end
+
+    name = cleanName(name)
+    if type(data.profiles[name]) ~= "table" then return false, "perfil não encontrado" end
+
+    data.autoload = name
+    local ok, err = writeProfiles(data)
+    if not ok then return false, tostring(err) end
+    return true
+end
+
+function State.profileAutoload()
+    return readProfiles().autoload
+end
+
+-- Chamado UMA vez na entrada, depois de State.load(). O perfil de autoload tem
+-- a última palavra para que o comportamento seja previsível entre sessões.
+function State.loadAutoload()
+    local name = State.profileAutoload()
+    if not name then return false end
+    local ok = State.profileLoad(name)
+    if ok then return true, name end
+    return false
+end
+
+-- Exposto para testes e para o diagnóstico.
+State.PROFILES_PATH = PROFILES_PATH
+State.CONFIG_PATH = CONFIG_PATH
 
 return State
 
@@ -1113,8 +1315,8 @@ local Theme = {}
 --          D7263D é mais quente; E02D2D é o que aparece na arte.
 -- Cinza  : neutro levemente quente, para não brigar com o vermelho.
 local TINTA = Color3.fromRGB(8, 8, 10)
-local BRASA = Color3.fromRGB(224, 45, 45)
 local CINZA = Color3.fromRGB(148, 150, 158)
+local DEFAULT_ACCENT = Color3.fromRGB(224, 45, 45)
 
 local function mix(a, b, t)
     return Color3.new(
@@ -1128,35 +1330,122 @@ local function lighten(c, t) return mix(c, Color3.new(1, 1, 1), t) end
 local function darken(c, t) return mix(c, Color3.new(0, 0, 0), t) end
 
 -- ── Superfícies ──────────────────────────────────────────────────────────────
-Theme.color = {
-    void       = TINTA,
-    base       = mix(TINTA, CINZA, 0.055),
-    surface    = mix(TINTA, CINZA, 0.085),
-    surfaceHi  = mix(TINTA, CINZA, 0.120),
-    surfaceTop = mix(TINTA, CINZA, 0.150),
-    card       = mix(TINTA, CINZA, 0.100),
+-- A paleta é calculada a partir do accent. Mudar o accent em tempo real
+-- significa recalcular ESTA tabela no lugar (nunca substituir a referência:
+-- os módulos guardaram Theme.color e continuariam vendo a paleta antiga).
+local function palette(accent)
+    return {
+        void       = TINTA,
+        base       = mix(TINTA, CINZA, 0.055),
+        surface    = mix(TINTA, CINZA, 0.085),
+        surfaceHi  = mix(TINTA, CINZA, 0.120),
+        surfaceTop = mix(TINTA, CINZA, 0.150),
+        card       = mix(TINTA, CINZA, 0.100),
 
-    line       = mix(TINTA, CINZA, 0.170),
-    lineSoft   = mix(TINTA, CINZA, 0.105),
-    lineHot    = mix(BRASA, TINTA, 0.40),
+        line       = mix(TINTA, CINZA, 0.170),
+        lineSoft   = mix(TINTA, CINZA, 0.105),
+        lineHot    = mix(accent, TINTA, 0.40),
 
-    text       = Color3.fromRGB(242, 243, 247),
-    textDim    = mix(CINZA, TINTA, 0.18),
-    textMute   = mix(CINZA, TINTA, 0.50),
+        text       = Color3.fromRGB(242, 243, 247),
+        textDim    = mix(CINZA, TINTA, 0.18),
+        textMute   = mix(CINZA, TINTA, 0.50),
 
-    accent     = BRASA,
-    accentHi   = lighten(BRASA, 0.30),
-    accentLo   = darken(BRASA, 0.36),
-    accentDeep = darken(BRASA, 0.62),
-    accentGhost= mix(BRASA, TINTA, 0.88),
+        accent     = accent,
+        accentHi   = lighten(accent, 0.30),
+        accentLo   = darken(accent, 0.36),
+        accentDeep = darken(accent, 0.62),
+        accentGhost= mix(accent, TINTA, 0.88),
 
-    on         = Color3.fromRGB(200, 68, 80),
-    off        = mix(TINTA, CINZA, 0.22),
-    warn       = Color3.fromRGB(230, 172, 76),
-    danger     = Color3.fromRGB(238, 62, 62),
-    ok         = Color3.fromRGB(98, 194, 142),
-    info       = Color3.fromRGB(110, 152, 222),
+        on         = mix(accent, Color3.new(1, 1, 1), 0.18),
+        off        = mix(TINTA, CINZA, 0.22),
+        warn       = Color3.fromRGB(230, 172, 76),
+        danger     = Color3.fromRGB(238, 62, 62),
+        ok         = Color3.fromRGB(98, 194, 142),
+        info       = Color3.fromRGB(110, 152, 222),
+    }
+end
+
+Theme.color = palette(DEFAULT_ACCENT)
+Theme.accent = DEFAULT_ACCENT
+Theme.DEFAULT_ACCENT = DEFAULT_ACCENT
+
+-- ── Presets de tema ──────────────────────────────────────────────────────────
+-- Nomes de jogador, não de marca alheia: a identidade padrão continua sendo o
+-- vermelho do VHub. Os outros presets existem para quem quiser outra leitura.
+Theme.PRESETS = {
+    ["VHub"]      = { 224, 45, 45 },    -- brasa (padrão)
+    ["Carmim"]    = { 215, 38, 61 },
+    ["Aço"]       = { 110, 152, 222 },
+    ["Esmeralda"] = { 98, 194, 142 },
+    ["Âmbar"]     = { 230, 172, 76 },
+    ["Violeta"]   = { 155, 120, 220 },
+    ["Gelo"]      = { 92, 202, 212 },
 }
+Theme.PRESET_ORDER = { "VHub", "Carmim", "Aço", "Esmeralda", "Âmbar", "Violeta", "Gelo" }
+
+function Theme.presetColor(name)
+    local rgb = Theme.PRESETS[name]
+    if not rgb then return nil end
+    return Color3.fromRGB(rgb[1], rgb[2], rgb[3])
+end
+
+-- Troca a paleta viva. A UI é remontada em seguida (UI.remount), porque as
+-- instâncias antigas guardaram cores individuais.
+function Theme.applyAccent(accent)
+    if not accent or accent.R == nil then return false end
+    Theme.accent = accent
+    for k, v in pairs(palette(accent)) do Theme.color[k] = v end
+    return true
+end
+
+-- Aceita "#RRGGBB", "RRGGBB", "#RGB" e devolve Color3 (ou nil).
+function Theme.fromHex(hex)
+    if hex == nil then return nil end
+    if type(hex) ~= "string" then
+        -- Já é Color3 (userdata no Roblox, table no mock).
+        if hex.R ~= nil then return hex end
+        return nil
+    end
+
+    local s = hex:gsub("#", "")
+    if #s == 3 then
+        s = s:sub(1, 1):rep(2) .. s:sub(2, 2):rep(2) .. s:sub(3, 3):rep(2)
+    end
+    if #s ~= 6 or s:find("%X") then return nil end
+
+    local r = tonumber(s:sub(1, 2), 16)
+    local g = tonumber(s:sub(3, 4), 16)
+    local b = tonumber(s:sub(5, 6), 16)
+    if not (r and g and b) then return nil end
+    return Color3.fromRGB(r, g, b)
+end
+
+-- Devolve "#RRGGBB" em maiúsculas.
+function Theme.toHex(color)
+    if not color or color.R == nil then return nil end
+    local function byte(v)
+        local n = math.floor(v * 255 + 0.5)
+        if n < 0 then n = 0 elseif n > 255 then n = 255 end
+        return string.format("%02X", n)
+    end
+    return "#" .. byte(color.R) .. byte(color.G) .. byte(color.B)
+end
+
+-- Nome do preset que corresponde exatamente à cor, ou "Personalizado".
+function Theme.presetFor(color)
+    local hex = Theme.toHex(color)
+    if not hex then return "Personalizado" end
+    for _, name in ipairs(Theme.PRESET_ORDER) do
+        local c = Theme.presetColor(name)
+        if Theme.toHex(c) == hex then return name end
+    end
+    return "Personalizado"
+end
+
+function Theme.applyConfig(config)
+    local color = Theme.fromHex(config and config.accentColor) or DEFAULT_ACCENT
+    return Theme.applyAccent(color)
+end
 
 -- ── Gradiente ────────────────────────────────────────────────────────────────
 -- LIMITE: ColorSequence e NumberSequence aceitam NO MÁXIMO 20 keypoints.
@@ -1207,18 +1496,20 @@ end
 
 -- Vermelho, para a marca e os elementos de destaque.
 function Theme.gradientBrand(frame)
+    local a = Theme.color.accent
     return Theme.gradient(frame, {
-        { 0.0, lighten(BRASA, 0.14) },
-        { 0.5, BRASA },
-        { 1.0, darken(BRASA, 0.30) },
+        { 0.0, lighten(a, 0.14) },
+        { 0.5, a },
+        { 1.0, darken(a, 0.30) },
     })
 end
 
--- Brilho vermelho que some para o escuro: usado atrás do logo e no cabeçalho.
+-- Brilho colorido que some para o escuro: usado atrás do logo e no cabeçalho.
 function Theme.gradientGlow(frame)
+    local a = Theme.color.accent
     return Theme.gradient(frame, {
-        { 0.0, mix(BRASA, TINTA, 0.55) },
-        { 0.6, mix(BRASA, TINTA, 0.88) },
+        { 0.0, mix(a, TINTA, 0.55) },
+        { 0.6, mix(a, TINTA, 0.88) },
         { 1.0, TINTA },
     })
 end
@@ -2461,7 +2752,7 @@ function Widget.info(props)
     Theme.stroke(box, props.danger and Theme.color.lineHot or Theme.color.lineSoft)
     Theme.pad(box, 0, 11, 8)
 
-    new("TextLabel", {
+    local label = new("TextLabel", {
         Size = UDim2.new(1, 0, 0, 0),
         AutomaticSize = Enum.AutomaticSize.Y,
         BackgroundTransparency = 1,
@@ -2475,329 +2766,19 @@ function Widget.info(props)
         Parent = box,
     })
 
-    return { instance = box }
+    -- Texto mutável: a UI usa para o resumo de perfis e o cartão de servidor,
+    -- que mudam sem que a seção inteira precise ser remontada.
+    return {
+        instance = box,
+        set = function(_, text) label.Text = tostring(text or "") end,
+        get = function() return label.Text end,
+    }
 end
 
 return Widget
 
 ]=]
 local __chunk = assert(loadstring(__src), "falha ao compilar core/widget")
-return __chunk(__req)
-end
-
--- ── features/combat ───────────────────────────────────────────
-MODULES["features/combat"] = function()
-local __src = [=[
---[[
-    AOTR · Combate
-    Arquivo: src/features/combat.lua
-
-    COMO O DANO REALMENTE ACONTECE
-    ------------------------------
-    Não existe RemoteEvent de ataque por ação. O jogo inteiro multiplexa sobre
-    dois objetos:
-
-        ReplicatedStorage.Assets.Remotes.POST  (RemoteEvent)
-        ReplicatedStorage.Assets.Remotes.GET   (RemoteFunction)
-
-    O ataque é um par de chamadas:
-
-        POST:FireServer("Attacks", "Slash", true)
-        GET:InvokeServer("Hitboxes", "Register", <part>, <magnitude>, <offset>)
-
-    A segunda é a DECLARAÇÃO DE DANO. O cliente diz ao servidor "acertei esta
-    parte, a esta distância". O servidor valida.
-
-    POR QUE O ALCANCE IMPORTA TANTO
-    -------------------------------
-    O script de referência usa `math.random(215, 230)` como magnitude. Isso é
-    fisicamente impossível — o alcance real da lâmina neste jogo é o
-    comprimento da arma. Um valor desses é o sinal mais óbvio que o servidor
-    pode checar, e é o candidato número um a gatilho de marcação.
-
-    Aqui a magnitude fica no padrão da lâmina (configurável até 40), e o
-    "alcance estendido" é opt-in com aviso claro. Preferimos um kill aura que
-    funciona e não marca a conta a um que mata de 200 studs por dois dias.
-
-    ANTI-SHADOW-BAN
-    ---------------
-    O gatilho confirmado é VELOCIDADE. Um kill aura que limpa missões em 8
-    segundos bate exatamente na assinatura. O script de referência embarca um
-    limitador chamado "Bypass Farm (No Shadow Ban)" travado em 32 s.
-
-    Este módulo implementa o mesmo princípio: segura o ÚLTIMO titã vivo até
-    que o tempo mínimo da missão tenha decorrido.
---]]
-
-
--- injetado pelo bundler: resolvedor de módulos no escopo deste chunk
-local __req = ...
-local Game = __req("core/game")
-local State = __req("core/state")
-local Util = __req("core/util")
-local Theme = __req("core/theme")
-
-local Combat = {}
-
-local RunService = game:GetService("RunService")
-
-Combat.target = nil
-Combat.kills = 0
-Combat._lastAttack = 0
-Combat._lastSlash = 0
-Combat._missionStart = os.clock()
-Combat._heldTitan = nil
-
--- ── Pose de ataque ───────────────────────────────────────────────────────────
--- A nuca fica na face posterior do Titã. Posicionar-se atrás e acima é o que
--- faz o golpe registrar na parte certa.
-
-function Combat.napePose(titan, offset, height)
-    local nape, root = titan.nape, titan.root
-    if not (nape and root) then return nil end
-
-    local away = nape.Position - root.Position
-    away = Vector3.new(away.X, 0, away.Z)
-    if away.Magnitude < 0.01 then
-        local back = -root.CFrame.LookVector
-        away = Vector3.new(back.X, 0, back.Z)
-    end
-    away = away.Unit
-
-    local stand = nape.Position + away * (offset or 4) + Vector3.new(0, height or 2, 0)
-    return CFrame.lookAt(stand, nape.Position)
-end
-
--- ── Ataque ───────────────────────────────────────────────────────────────────
-
--- Dispara o par de remotes. `part` é o alvo real: passar a nuca é o que
--- caracteriza um acerto crítico — não existe remote separado para isso.
-function Combat.strike(titan, magnitude, offset)
-    magnitude = magnitude or State.config.hitMagnitude
-    offset = offset or State.config.hitOffset
-
-    -- POST: o swing em si.
-    Game.post("Attacks", "Slash", true)
-
-    -- GET: a declaração de dano. É esta que o servidor valida.
-    local ok = Game.get("Hitboxes", "Register", titan.nape, magnitude, offset)
-    return ok
-end
-
--- ── Auto TP ──────────────────────────────────────────────────────────────────
-
-function Combat.autoTP()
-    if os.clock() - (Combat._lastTP or 0) < State.config.tpCooldown then return end
-
-    local titan = Game.getNearestTitan()
-    if not titan or titan.dist > State.config.tpRange then return end
-
-    local cf = Combat.napePose(titan, State.config.tpOffset, 2.2)
-    local root = Game.getRoot()
-    if cf and root then
-        root.CFrame = cf
-        Combat._lastTP = os.clock()
-        Combat.target = titan
-    end
-end
-
--- ── Kill Aura ────────────────────────────────────────────────────────────────
-
--- O limitador de velocidade. Conta quantos titãs vivos existem; quando sobra
--- só um E a missão ainda é recente, ele não ataca. É o que evita a assinatura
--- de "limpou em 6 segundos".
-function Combat.shouldHold()
-    if not State.flags.safeFarm then return false end
-
-    local safeTime = State.config.safeTime
-    if safeTime <= 0 then return false end
-
-    local titans = Game.getTitans()
-    if #titans > 1 then
-        -- Ainda há trabalho: o tempo corre normalmente.
-        Combat._missionStart = Combat._missionStart or os.clock()
-        return false
-    end
-
-    -- Último titã: só ataca depois do tempo mínimo.
-    local elapsed = os.clock() - (Combat._missionStart or os.clock())
-    if elapsed < safeTime then
-        Combat._heldTitan = titans[1] and titans[1].model or nil
-        return true
-    end
-    return false
-end
-
-function Combat.killAuraTick()
-    local titans = Game.getTitans()
-    if #titans == 0 then return end
-
-    local range = State.config.killAuraRange
-    local target
-    for _, t in ipairs(titans) do
-        if t.dist <= range then target = t break end
-    end
-
-    -- Sem alvo no alcance: se o Auto TP está ligado, aproxima.
-    if not target then
-        if State.flags.autoTP then Combat.autoTP() end
-        return
-    end
-
-    Combat.target = target
-
-    -- Trava de segurança: segura o ultimo titã para não fechar a missão cedo.
-    if Combat.shouldHold() then return end
-
-    if os.clock() - Combat._lastAttack < State.config.killAuraDelay then return end
-    Combat._lastAttack = os.clock()
-
-    -- Reposiciona antes de bater, para o golpe sair na nuca.
-    if State.flags.killAuraNape then
-        local cf = Combat.napePose(target, State.config.tpOffset, 2.2)
-        local root = Game.getRoot()
-        if cf and root then root.CFrame = cf end
-    end
-
-    Combat.strike(target)
-end
-
--- ── Nape Expander ────────────────────────────────────────────────────────────
--- Aumenta a parte da nuca localmente. A nuca é invisível por padrão; deixá-la
--- visível e maior ajuda muito na mira manual.
--- Efeito é client-side: o servidor tem a própria cópia.
-
-local expanded = {}
-
-function Combat.expandNapes()
-    local scale = State.config.napeScale
-    for _, t in ipairs(Game.getTitans()) do
-        local nape = t.nape
-        if nape and not expanded[nape] then
-            expanded[nape] = {
-                size = nape.Size,
-                transparency = nape.Transparency,
-                color = nape.Color,
-                material = nape.Material,
-            }
-            nape.Size = nape.Size * scale
-            nape.Transparency = State.config.napeTransparency
-            nape.Color = Theme.color.accent
-            nape.Material = Enum.Material.Neon
-        end
-    end
-end
-
-function Combat.restoreNapes()
-    for part, saved in pairs(expanded) do
-        if part and part.Parent then
-            pcall(function()
-                part.Size = saved.size
-                part.Transparency = saved.transparency
-                part.Color = saved.color
-                part.Material = saved.material
-            end)
-        end
-        expanded[part] = nil
-    end
-end
-
--- ── Reabastecimento ──────────────────────────────────────────────────────────
--- "Gás infinito" neste jogo significa spammar os remotes de reload, não
--- escrever num valor — não existe valor de gás no cliente.
---   GET("Blades","Reload")
---   GET("Blades","Full_Reload", "Left"|"Right", <estação>)
---   POST("Attacks","Reload", <estação>)
-
-function Combat.resupply()
-    local station = Game.getRefillStation()
-
-    if State.flags.autoRefill then
-        if Game.isBladeBroken() then
-            Game.get("Blades", "Full_Reload", "Left", station)
-            Game.get("Blades", "Full_Reload", "Right", station)
-        end
-        Game.get("Blades", "Reload")
-    end
-
-    if State.flags.infiniteGas and station then
-        Game.post("Attacks", "Reload", station)
-    end
-end
-
--- ── Contagem de abates ───────────────────────────────────────────────────────
-
-Combat._tracked = {}
-
-function Combat.trackKills()
-    local now = os.clock()
-    local seen = {}
-    for _, t in ipairs(Game.getTitans()) do
-        seen[t.model] = true
-        local rec = Combat._tracked[t.model]
-        if rec then
-            rec.hp = t.hp
-            rec.seen = now
-        else
-            Combat._tracked[t.model] = { hp = t.hp, seen = now }
-        end
-    end
-    for model, rec in pairs(Combat._tracked) do
-        if not seen[model] then
-            if (now - rec.seen) < 2 and State.flags.killAura then
-                Combat.kills = Combat.kills + 1
-            end
-            Combat._tracked[model] = nil
-        end
-    end
-end
-
--- ── Ciclo ────────────────────────────────────────────────────────────────────
-
-function Combat.start()
-    if Combat._conn then return end
-    Combat._missionStart = os.clock()
-
-    Combat._conn = RunService.RenderStepped:Connect(function()
-        local ok, err = pcall(function()
-            if State.flags.killAura then
-                Combat.killAuraTick()
-            elseif State.flags.autoTP then
-                Combat.autoTP()
-            end
-
-            if State.flags.napeExpander then
-                Combat.expandNapes()
-            end
-
-            if State.flags.autoRefill or State.flags.infiniteGas then
-                if os.clock() - (Combat._lastResupply or 0) > 1 then
-                    Combat._lastResupply = os.clock()
-                    Combat.resupply()
-                end
-            end
-
-            Combat.trackKills()
-        end)
-        if not ok then warn("[AOTR] combate: " .. tostring(err)) end
-    end)
-end
-
-function Combat.stop()
-    if Combat._conn then Combat._conn:Disconnect(); Combat._conn = nil end
-    Combat.restoreNapes()
-end
-
--- Recomeça a janela de segurança. Chamado quando uma missão nova é detectada.
-function Combat.newMission()
-    Combat._missionStart = os.clock()
-    Combat._heldTitan = nil
-end
-
-return Combat
-
-]=]
-local __chunk = assert(loadstring(__src), "falha ao compilar features/combat")
 return __chunk(__req)
 end
 
@@ -2825,13 +2806,13 @@ local __src = [=[
                       GET("S_Equipment", "Unlock", { <ids de skill> })
                       GET("S_Equipment", "Weapon", "Blades"|"Spears")
 
-    VALORES VÁLIDOS (listas completas das fontes)
+    VALORES VÁLIDOS (listas completas das fontes + captura do AirFlow)
       Mapas        : Shiganshina, Trost, Outskirts, Forest, Utgard, Docks,
                      Stohess, Chapel
-      Dificuldade  : Easy, Normal, Hard, Severe, Aberrant
+      Dificuldade  : Easy, Normal, Hard, Severe, Aberrant, Highest
       Tipo         : Missions | Raids | Waves
       Objetivo     : Skirmish (só em Missions) | Waves (só em Waves)
-      Modificadores: 12 opções, ver MODIFIERS abaixo
+      Modificadores: 15 opções, ver MODIFIERS abaixo
 
       Raids: Attack Titan→Trost, Armored Titan→Shiganshina,
              Female Titan→Stohess, Colossal Titan→Shiganshina (só Aberrant)
@@ -2859,16 +2840,21 @@ Lobby.MAPS = {
     "Utgard", "Docks", "Stohess", "Chapel",
 }
 
-Lobby.DIFFICULTIES = { "Easy", "Normal", "Hard", "Severe", "Aberrant" }
+Lobby.DIFFICULTIES = {
+    "Easy", "Normal", "Hard", "Severe", "Aberrant", "Highest",
+}
 
 Lobby.TYPES = { "Missions", "Raids", "Waves" }
 
-Lobby.OBJECTIVES = { "Skirmish" }
+Lobby.OBJECTIVES = { "Skirmish", "Waves" }
 
+-- Lista completa vista no dropdown do AirFlow (captura de 05/11): 15 opções.
+-- Faltavam Fatigue, Evolution e Primitive na versão anterior.
 Lobby.MODIFIERS = {
     "No Perks", "No Skills", "No Memories", "Nightmare", "Oddball",
     "Injury Prone", "Chronic Injuries", "Fog", "Glass Cannon",
-    "Time Trial", "Boring", "Simple",
+    "Time Trial", "Fatigue", "Evolution", "Boring", "Simple",
+    "Primitive",
 }
 
 Lobby.RAIDS = {
@@ -2876,6 +2862,12 @@ Lobby.RAIDS = {
     ["Armored Titan"]  = "Shiganshina",
     ["Female Titan"]   = "Stohess",
     ["Colossal Titan"] = "Shiganshina",
+}
+
+-- Ordem fixa para o dropdown da UI. Percorrer `pairs(RAIDS)` funcionaria, mas
+-- a ordem mudaria entre sessões e o menu ficaria imprevisível.
+Lobby.RAID_NAMES = {
+    "Attack Titan", "Armored Titan", "Female Titan", "Colossal Titan",
 }
 
 -- Mapa com bônus ativo, ou nil.
@@ -3459,9 +3451,24 @@ end
 
 local NAPE_FACTORY_SIZE = Vector3.new(15, 9, 11)
 local expanded = {}
+local napeKey = nil
+
+-- Tamanho alvo da nuca. Duas formas, na ordem de prioridade:
+--   napeSize > 0  → tamanho absoluto em studs (maior dimensão). 280 é o valor
+--                   que o AirFlow usa; é opt-in consciente.
+--   napeSize == 0 → multiplicador napeScale sobre o tamanho de fábrica.
+function Mission.napeTargetSize()
+    local absolute = tonumber(State.config.napeSize) or 0
+    if absolute > 0 then
+        -- A maior dimensão de fábrica é X (15). Escalar por ela mantém a
+        -- proporção 15:9:11 e faz "280" significar 280 studs de comprimento.
+        return NAPE_FACTORY_SIZE * (absolute / NAPE_FACTORY_SIZE.X)
+    end
+    return NAPE_FACTORY_SIZE * (State.config.napeScale or 1)
+end
 
 function Mission.expandNapes()
-    local mult = State.config.napeScale
+    local size = Mission.napeTargetSize()
     for _, t in ipairs(Game.getTitans()) do
         local nape = t.nape
         if nape and not expanded[nape] then
@@ -3471,13 +3478,23 @@ function Mission.expandNapes()
                 color = nape.Color,
                 material = nape.Material,
             }
-            nape.Size = NAPE_FACTORY_SIZE * mult
+            nape.Size = size
             nape.Transparency = State.config.napeTransparency
             nape.Color = Theme.color.accent
             nape.Material = Enum.Material.Neon
             nape.CanCollide = false
         end
     end
+    napeKey = Mission._napeSignature()
+end
+
+-- Assinatura dos parâmetros da nuca. Comparar Vector3 por identidade não
+-- funciona no mock (e é frágil no Roblox), então a assinatura é textual.
+function Mission._napeSignature()
+    return ("%s|%s|%s"):format(
+        tostring(State.config.napeSize or 0),
+        tostring(State.config.napeScale or 0),
+        tostring(State.config.napeTransparency or 0))
 end
 
 function Mission.restoreNapes()
@@ -3492,10 +3509,12 @@ function Mission.restoreNapes()
         end
         expanded[part] = nil
     end
+    napeKey = nil
 end
 
 -- Uma nuca que sai do mapa e volta deve ser re-expandida. Sem isso, o Titã
 -- seguinte nasce com hitbox normal e o usuário acha que a feature parou.
+-- Também reaplica o tamanho quando o usuário mexe no slider durante a missão.
 function Mission.refreshExpanded()
     local live = {}
     for _, t in ipairs(Game.getTitans()) do live[t.nape] = true end
@@ -3505,6 +3524,23 @@ function Mission.refreshExpanded()
             expanded[part] = nil
         end
     end
+
+    -- Comparar ANTES de expandir: expandNapes grava a assinatura no fim, e
+    -- comparar depois faria a mudança do slider passar despercebida.
+    local signature = Mission._napeSignature()
+    if napeKey ~= signature then
+        local size = Mission.napeTargetSize()
+        for part in pairs(expanded) do
+            if part and part.Parent then
+                pcall(function()
+                    part.Size = size
+                    part.Transparency = State.config.napeTransparency
+                end)
+            end
+        end
+    end
+
+    -- Expande nacas novas com o tamanho atual e grava a assinatura aplicada.
     Mission.expandNapes()
 end
 
@@ -3817,6 +3853,273 @@ return Post
 
 ]=]
 local __chunk = assert(loadstring(__src), "falha ao compilar features/postmission")
+return __chunk(__req)
+end
+
+-- ── features/server ───────────────────────────────────────────
+MODULES["features/server"] = function()
+local __src = [=[
+--[[
+    VHub · Servidor
+    Arquivo: src/features/server.lua
+
+    Ferramentas de sessão que o AirFlow oferece na Home: rejoin, server hop,
+    entrar no servidor mais vazio e copiar identificadores.
+
+    Nada aqui conhece a UI. As ações devolvem true/false e avisam pelo
+    Util.notify (que a interface registra em UI.notify). A lista de servidores
+    vem da API pública da Roblox, então depende de request/http_request —
+    quando o executor não tem, a função avisa em vez de falhar em silêncio.
+
+    LIMITE HONESTO: a API só lista servidores PÚBLICOS. Servidor privado,
+    reservado ou cheio não aparece; "mais vazio" é o menor `playing` entre os
+    que a API devolveu, não uma garantia de vaga.
+--]]
+
+
+-- injetado pelo bundler: resolvedor de módulos no escopo deste chunk
+local __req = ...
+local Game = __req("core/game")
+local Util = __req("core/util")
+
+local Server = {}
+
+local Players = game:GetService("Players")
+local HttpService = game:GetService("HttpService")
+
+local SERVERS_URL = "https://games.roblox.com/v1/games/%d/servers/Public?sortOrder=Asc&limit=100"
+
+-- ── Identificadores ──────────────────────────────────────────────────────────
+
+function Server.jobId()
+    return game.JobId or ""
+end
+
+function Server.placeId()
+    return game.PlaceId
+end
+
+function Server.universeId()
+    return game.GameId or Game.UNIVERSE_ID
+end
+
+function Server.shortJob()
+    local id = Server.jobId()
+    if #id <= 12 then return id end
+    return id:sub(1, 8) .. "…"
+end
+
+function Server.info()
+    return {
+        jobId = Server.jobId(),
+        shortJob = Server.shortJob(),
+        placeId = Server.placeId(),
+        universeId = Server.universeId(),
+        players = #Players:GetPlayers(),
+        maxPlayers = Players.MaxPlayers,
+    }
+end
+
+-- ── Área de transferência ────────────────────────────────────────────────────
+
+function Server.copy(text, label)
+    if not text or text == "" then
+        Util.notify("Copiar", "Nada para copiar aqui.", 4)
+        return false
+    end
+    if not Util.setClipboard then
+        Util.notify("Copiar", "Este executor não expõe a área de transferência.", 5)
+        return false
+    end
+
+    local ok = pcall(Util.setClipboard, text)
+    if ok then
+        Util.notify("Copiado", label or text, 3)
+    else
+        Util.notify("Copiar", "A cópia falhou neste executor.", 4)
+    end
+    return ok
+end
+
+function Server.copyJobId()
+    return Server.copy(Server.jobId(), "Job ID copiado.")
+end
+
+function Server.copyUniverse()
+    return Server.copy(tostring(Server.universeId()), "Universo copiado.")
+end
+
+function Server.copyPlace()
+    return Server.copy(tostring(Server.placeId()), "PlaceId copiado.")
+end
+
+function Server.copyInvite()
+    local url = ("https://www.roblox.com/games/start?placeId=%d&gameInstanceId=%s")
+        :format(Server.placeId(), Server.jobId())
+    return Server.copy(url, "Link do servidor copiado.")
+end
+
+-- ── Teleporte ────────────────────────────────────────────────────────────────
+
+local function teleportService()
+    return game:GetService("TeleportService")
+end
+
+function Server.connect(jobId)
+    if not jobId or jobId == "" then
+        Util.notify("Servidor", "Job ID inválido.", 4)
+        return false
+    end
+
+    local lp = Players.LocalPlayer
+    if not lp then
+        Util.notify("Servidor", "Jogador ainda não carregou.", 4)
+        return false
+    end
+
+    local ok, err = pcall(function()
+        teleportService():TeleportToPlaceInstance(Server.placeId(), jobId, lp)
+    end)
+    if not ok then
+        Util.notify("Servidor", "O executor bloqueou o teleporte: " .. tostring(err), 6)
+        return false
+    end
+
+    Util.notify("Servidor", "Teleportando…", 3)
+    return true
+end
+
+function Server.rejoin()
+    local job = Server.jobId()
+    if job ~= "" then
+        return Server.connect(job)
+    end
+
+    -- Fallback para lugares em que o JobId não é exposto: teleporte simples.
+    local lp = Players.LocalPlayer
+    if not lp then return false end
+    local ok, err = pcall(function()
+        teleportService():Teleport(Server.placeId(), lp)
+    end)
+    if not ok then
+        Util.notify("Servidor", "O executor bloqueou o teleporte: " .. tostring(err), 6)
+        return false
+    end
+    Util.notify("Servidor", "Reentrando…", 3)
+    return true
+end
+
+-- ── Lista de servidores públicos ─────────────────────────────────────────────
+
+local function requestFn()
+    return request or http_request or (syn and syn.request)
+end
+
+-- Assíncrono: chama callback(list, erro). list é uma tabela de
+-- { id, playing, maxPlayers }, como a API devolve.
+function Server.fetchServers(callback)
+    local req = requestFn()
+    if not req then
+        callback(nil, "executor sem request/http_request")
+        return
+    end
+
+    task.spawn(function()
+        local ok, result = pcall(function()
+            local res = req({
+                Url = SERVERS_URL:format(Server.placeId()),
+                Method = "GET",
+            })
+            if not res or not res.Body then error("resposta vazia", 0) end
+            local data = HttpService:JSONDecode(res.Body)
+            local list = data and data.data
+            if type(list) ~= "table" then error("JSON sem campo data", 0) end
+            return list
+        end)
+        if ok then callback(result) else callback(nil, tostring(result)) end
+    end)
+end
+
+local function eligible(list, currentJob)
+    local out = {}
+    for _, s in ipairs(list or {}) do
+        if type(s) == "table" and type(s.id) == "string"
+            and s.id ~= "" and s.id ~= currentJob then
+            local playing = tonumber(s.playing) or 0
+            local max = tonumber(s.maxPlayers) or 0
+            if max == 0 or playing < max then
+                table.insert(out, {
+                    id = s.id,
+                    playing = playing,
+                    maxPlayers = max,
+                })
+            end
+        end
+    end
+    return out
+end
+
+-- Escolha aleatória entre os servidores com vaga. Separada do teleporte para
+-- ser testável sem rede.
+function Server.chooseHop(list, currentJob)
+    local pool = eligible(list, currentJob)
+    if #pool == 0 then return nil end
+    return pool[math.random(1, #pool)]
+end
+
+-- O menos populoso. Empate fica com o primeiro — estável e previsível.
+function Server.chooseLowest(list, currentJob)
+    local pool = eligible(list, currentJob)
+    if #pool == 0 then return nil end
+
+    local best = pool[1]
+    for i = 2, #pool do
+        if pool[i].playing < best.playing then best = pool[i] end
+    end
+    return best
+end
+
+function Server.serverHop()
+    Server.fetchServers(function(list, err)
+        if not list then
+            Util.notify("Server Hop", "Não consegui listar servidores: " .. tostring(err), 6)
+            return
+        end
+
+        local pick = Server.chooseHop(list, Server.jobId())
+        if not pick then
+            Util.notify("Server Hop", "Nenhum servidor público com vaga agora.", 5)
+            return
+        end
+
+        Server.connect(pick.id)
+    end)
+end
+
+function Server.joinLowest()
+    Server.fetchServers(function(list, err)
+        if not list then
+            Util.notify("Servidor mais vazio",
+                "Não consegui listar servidores: " .. tostring(err), 6)
+            return
+        end
+
+        local pick = Server.chooseLowest(list, Server.jobId())
+        if not pick then
+            Util.notify("Servidor mais vazio", "Nenhum servidor público com vaga agora.", 5)
+            return
+        end
+
+        Util.notify("Servidor mais vazio",
+            ("%d/%d jogadores — entrando…"):format(pick.playing, pick.maxPlayers), 3)
+        Server.connect(pick.id)
+    end)
+end
+
+return Server
+
+]=]
+local __chunk = assert(loadstring(__src), "falha ao compilar features/server")
 return __chunk(__req)
 end
 
@@ -4364,6 +4667,10 @@ local Util = __req("core/util")
 local Game = __req("core/game")
 local Stats = __req("core/stats")
 local Layout = __req("core/layout")
+-- Lobby e Servidor são a fonte única das listas e das ações da Home. Não há
+-- ciclo: nenhum dos dois conhece a UI (só core/game, core/state e core/util).
+local Lobby = __req("features/lobby")
+local Server = __req("features/server")
 
 local UI = {}
 
@@ -4387,10 +4694,69 @@ local minimized = false
 local toasts = {}
 local statCards = {}
 
+-- Conexões feitas em serviços (UserInputService) que precisam ser desligadas
+-- no unmount. Sem isso, cada remontagem deixaria um listener antigo vivo,
+-- alternando a visibilidade duas ou três vezes por tecla.
+local connections = {}
+
+-- Hooks chamados depois de cada montagem (inclusive a primeira). O main usa
+-- para remontar o ESP no ScreenGui novo.
+local remountHooks = {}
+
+-- Módulos ligados em tempo de execução. O main chama bindLobby/bindServer;
+-- os padrões abaixo garantem que a UI também funcione sozinha nos testes.
+local Lobby_ref = Lobby
+local Server_ref = Server
+
 -- Registro dos controles para o rebuild após carregar configuração.
 -- Precisa existir ANTES dos builders rodarem — eles escrevem aqui.
 UI.controls = {}
 UI.VERSION = "2.0.0"
+
+-- Teclas oferecidas no seletor. A lista cobre o que os executores costumam
+-- deixar livre; não tentamos capturar qualquer tecla (conflitaria com o jogo).
+local MENU_KEYS = {
+    "RightControl", "RightShift", "LeftControl", "LeftShift",
+    "Insert", "Home", "End", "K", "P", "F1", "F2",
+}
+
+local function track(conn)
+    if conn then table.insert(connections, conn) end
+    return conn
+end
+
+local function menuScaleValue()
+    local pct = tonumber(State.config.menuScale) or 100
+    return math.clamp(pct, 70, 140) / 100
+end
+
+local function shortKey(name)
+    return (tostring(name or "RightControl"):gsub("Control", "Ctrl"))
+end
+
+local function keyFromName(name)
+    if type(name) ~= "string" then return nil end
+    local ok, code = pcall(function() return Enum.KeyCode[name] end)
+    if ok then return code end
+    return nil
+end
+
+local function serverSummary()
+    local s = Server_ref.info()
+    local job = s.shortJob
+    if not job or job == "" then job = "indisponível" end
+    return ("Job %s\nPlaceId %s · universo %s\n%s jogadores no servidor"):format(
+        job, tostring(s.placeId), tostring(s.universeId), tostring(s.players))
+end
+
+local function profileSummary()
+    local names = State.profileList()
+    local auto = State.profileAutoload()
+    local listed = #names > 0 and table.concat(names, ", ") or "nenhum"
+    if #listed > 110 then listed = listed:sub(1, 107) .. "…" end
+    return ("Autoload atual: %s\nPerfis (%d): %s"):format(
+        auto or "nenhum", #names, listed)
+end
 
 -- ── Definição das abas ───────────────────────────────────────────────────────
 
@@ -4454,6 +4820,12 @@ local function buildRoot()
     })
     Theme.corner(root, Theme.metric.radius + 3)
     Theme.stroke(root, Theme.color.lineHot)
+
+    -- Escala do menu em tempo real. UIScale reduz/amplia o Frame inteiro sem
+    -- tocar no layout interno — por isso o slider não precisa remontar a UI.
+    UI.scale = Instance.new("UIScale")
+    UI.scale.Scale = menuScaleValue()
+    UI.scale.Parent = root
 
     local base = Widget.new("Frame", {
         Size = UDim2.fromScale(1, 1),
@@ -4591,21 +4963,21 @@ local function buildHeader()
 
     -- Arrasto
     local dragging, dragStart, startPos
-    head.InputBegan:Connect(function(input)
+    track(head.InputBegan:Connect(function(input)
         if input.UserInputType == Enum.UserInputType.MouseButton1
             or input.UserInputType == Enum.UserInputType.Touch then
             dragging = true
             dragStart = input.Position
             startPos = root.Position
         end
-    end)
-    head.InputEnded:Connect(function(input)
+    end))
+    track(head.InputEnded:Connect(function(input)
         if input.UserInputType == Enum.UserInputType.MouseButton1
             or input.UserInputType == Enum.UserInputType.Touch then
             dragging = false
         end
-    end)
-    UserInputService.InputChanged:Connect(function(input)
+    end))
+    track(UserInputService.InputChanged:Connect(function(input)
         if not dragging then return end
         if input.UserInputType == Enum.UserInputType.MouseMovement
             or input.UserInputType == Enum.UserInputType.Touch then
@@ -4614,7 +4986,7 @@ local function buildHeader()
                 startPos.X.Scale, startPos.X.Offset + d.X,
                 startPos.Y.Scale, startPos.Y.Offset + d.Y)
         end
-    end)
+    end))
 end
 
 local function buildSidebar()
@@ -4768,11 +5140,11 @@ local function buildStatusBar()
         zindex = 5,
     })
 
-    Widget.label({
+    UI.keyHint = Widget.label({
         parent = statusBar,
-        text = "RightCtrl · ocultar",
-        position = UDim2.new(1, -140, 0, 0),
-        size = UDim2.fromOffset(140, 26),
+        text = ("%s · ocultar"):format(shortKey(State.config.menuKey)),
+        position = UDim2.new(1, -160, 0, 0),
+        size = UDim2.fromOffset(160, 26),
         textSize = Theme.text.tiny,
         font = Theme.font.mono,
         color = Theme.color.textMute,
@@ -5011,9 +5383,41 @@ local function buildHome()
         font = Theme.font.mono,
     })
 
+    -- ── Servidor
+    -- Ferramentas de sessão: reentrar, trocar de servidor e copiar os
+    -- identificadores. Nenhuma delas depende de estado interno da UI.
+    local srvSec = Widget.section({ parent = page, text = "Servidor" })
+    srvSec.instance.LayoutOrder = 4
+    UI.serverInfo = Widget.info({
+        parent = srvSec.body,
+        text = serverSummary(),
+        order = 1,
+    })
+
+    addButton(srvSec, 2, "Reentrar no servidor", "solid", function()
+        Server_ref.rejoin()
+    end)
+    addButton(srvSec, 3, "Server Hop", "ghost", function()
+        Server_ref.serverHop()
+    end)
+    addButton(srvSec, 4, "Entrar no servidor mais vazio", "ghost", function()
+        Server_ref.joinLowest()
+    end)
+    addButton(srvSec, 5, "Copiar Job ID", "ghost", function()
+        Server_ref.copyJobId()
+    end)
+    addButton(srvSec, 6, "Copiar universo", "ghost", function()
+        Server_ref.copyUniverse()
+    end)
+    addButton(srvSec, 7, "Copiar convite do servidor", "ghost", function()
+        Server_ref.copyInvite()
+    end)
+    addInfo(srvSec, 8,
+        "Server Hop e Servidor mais vazio consultam a lista pública da Roblox e precisam de request/http_request no executor. A lista só traz servidores públicos com vaga.")
+
     -- ── Comunidade
     local commSec = Widget.section({ parent = page, text = "Comunidade" })
-    commSec.instance.LayoutOrder = 4
+    commSec.instance.LayoutOrder = 5
     addInfo(commSec, 1,
         "Comunidade do VHub em breve. Aqui vai ficar o convite, o status do serviço e as novidades.")
 
@@ -5073,10 +5477,11 @@ local function buildMissoes()
         "Aumenta a nuca para facilitar o acerto")
     addToggle(nuca, 2, "showNape", "Mostrar a nuca",
         "Deixa visível em vermelho")
-    addSlider(nuca, 3, "napeScale", "Tamanho", 0, 2, "x", 1)
-    addSlider(nuca, 4, "napeTransparency", "Transparência", 0, 1, "", 2)
-    addInfo(nuca, 5,
-        "Tamanho de fábrica da nuca: 15 × 9 × 11. O multiplicador é aplicado sobre ele e restaurado ao desligar.")
+    addSlider(nuca, 3, "napeSize", "Tamanho absoluto", 0, 400, " studs", 0)
+    addSlider(nuca, 4, "napeScale", "Multiplicador", 0, 2, "x", 1)
+    addSlider(nuca, 5, "napeTransparency", "Transparência", 0, 1, "", 2)
+    addInfo(nuca, 6,
+        "Tamanho de fábrica da nuca: 15 × 9 × 11. O tamanho absoluto tem prioridade quando é maior que 0 (280 é o valor do AirFlow); com 0, vale o multiplicador. Tudo é restaurado ao desligar.")
 
     -- ── Pós-missão
     local pos = Widget.section({ parent = page, text = "Painel de Pós-Missão" })
@@ -5128,25 +5533,20 @@ local function buildLobby()
         "Cria a sala com as opções abaixo e entra")
     addToggle(mis, 2, "preferBoosted", "Preferir mapa com bônus",
         "Escolhe o mapa com bônus ativo quando houver")
-    addDropdown(mis, 3, "missionType", "Modo", { "Missions", "Raids", "Waves" })
-    addDropdown(mis, 4, "mapName", "Mapa", {
-        "Automático", "Shiganshina", "Trost", "Outskirts", "Forest",
-        "Utgard", "Docks", "Stohess", "Chapel",
-    })
-    addDropdown(mis, 5, "objective", "Objetivo", { "Skirmish", "Waves" })
-    addDropdown(mis, 6, "difficulty", "Dificuldade",
-        { "Easy", "Normal", "Hard", "Severe", "Aberrant" })
-    addDropdown(mis, 7, "raid", "Titã (modo Raids)",
-        { "Attack Titan", "Armored Titan", "Female Titan", "Colossal Titan" })
+    -- As listas vêm do módulo Lobby: uma fonte única para UI e execução.
+    local maps = { "Automático" }
+    for _, m in ipairs(Lobby_ref.MAPS) do table.insert(maps, m) end
+
+    addDropdown(mis, 3, "missionType", "Modo", Lobby_ref.TYPES)
+    addDropdown(mis, 4, "mapName", "Mapa", maps)
+    addDropdown(mis, 5, "objective", "Objetivo", Lobby_ref.OBJECTIVES)
+    addDropdown(mis, 6, "difficulty", "Dificuldade", Lobby_ref.DIFFICULTIES)
+    addDropdown(mis, 7, "raid", "Titã (modo Raids)", Lobby_ref.RAID_NAMES)
 
     local modChips = Widget.chips({
         parent = mis.body,
         text = "Modificadores",
-        options = {
-            "No Perks", "No Skills", "No Memories", "Nightmare", "Oddball",
-            "Injury Prone", "Chronic Injuries", "Fog", "Glass Cannon",
-            "Time Trial", "Boring", "Simple",
-        },
+        options = Lobby_ref.MODIFIERS,
         default = State.config.modifiers,
         onChange = function(list) State.config.modifiers = list end,
     })
@@ -5222,6 +5622,21 @@ end
 
 -- ── Página: Config ───────────────────────────────────────────────────────────
 
+local function refreshProfileInfo()
+    if UI.profileInfo then UI.profileInfo:set(profileSummary()) end
+end
+
+-- Aplica uma cor e remonta no próximo ciclo. Remontar de dentro do callback de
+-- um widget destruiria o próprio controle que ainda está executando.
+local function applyThemeColor(color, presetName)
+    if not color then return false end
+    State.config.accentColor = Theme.toHex(color)
+    State.config.themePreset = presetName or Theme.presetFor(color)
+    Theme.applyAccent(color)
+    task.defer(function() UI.remount() end)
+    return true
+end
+
 local function buildConfig()
     local page = Widget.new("Frame", {
         Name = "config",
@@ -5237,14 +5652,73 @@ local function buildConfig()
         Parent = page,
     })
 
+    -- ── Menu e tema
+    local menu = Widget.section({ parent = page, text = "Menu e Tema" })
+    menu.instance.LayoutOrder = 1
+
+    local scale = Widget.slider({
+        parent = menu.body,
+        text = "Tamanho do menu",
+        min = 70, max = 140,
+        default = State.config.menuScale,
+        suffix = "%", decimals = 0,
+        onChange = function(v) UI.applyMenuScale(v) end,
+    })
+    scale.instance.LayoutOrder = 1
+    UI.controls.menuScale = scale
+
+    addDropdown(menu, 2, "menuKey", "Tecla de abrir/fechar", MENU_KEYS, function(v)
+        if UI.keyHint then
+            UI.keyHint.Text = ("%s · ocultar"):format(shortKey(v))
+        end
+    end)
+
+    local accent = Theme.fromHex(State.config.accentColor) or Theme.DEFAULT_ACCENT
+    local presetOptions = { "Personalizado" }
+    for _, name in ipairs(Theme.PRESET_ORDER) do table.insert(presetOptions, name) end
+
+    addDropdown(menu, 3, "themePreset", "Preset de tema",
+        presetOptions,
+        function(name)
+            if name == "Personalizado" then
+                UI.notify("Tema", "Use o campo hex abaixo para escolher uma cor própria.", 4)
+                return
+            end
+            local color = Theme.presetColor(name)
+            if color then applyThemeColor(color, name) end
+        end)
+
+    local accentInput = Widget.input({
+        parent = menu.body,
+        text = "Cor de destaque (hex)",
+        default = Theme.toHex(accent) or "#E02D2D",
+        placeholder = "#E02D2D",
+        onSubmit = function(value)
+            local color = Theme.fromHex(value)
+            if not color then
+                UI.notify("Tema", "Cor inválida. Use #RRGGBB.", 4)
+                return
+            end
+            applyThemeColor(color)
+        end,
+    })
+    accentInput.instance.LayoutOrder = 4
+    UI.controls.accentColor = accentInput
+
+    addButton(menu, 5, "Restaurar tema do VHub", "ghost", function()
+        applyThemeColor(Theme.DEFAULT_ACCENT, "VHub")
+    end)
+    addInfo(menu, 6,
+        "O tamanho e a tecla mudam na hora. A cor de destaque e o preset remontam a interface para repintar todos os controles. Tudo é salvo no vhub_config.json.")
+
     local sis = Widget.section({ parent = page, text = "Sistema" })
-    sis.instance.LayoutOrder = 1
+    sis.instance.LayoutOrder = 2
     addToggle(sis, 1, "antiAfk", "Anti-AFK", "Impede a desconexão por inatividade")
     addToggle(sis, 2, "watermark", "Marca d'água")
     addToggle(sis, 3, "notifications", "Notificações")
 
     local av = Widget.section({ parent = page, text = "Avançado" })
-    av.instance.LayoutOrder = 2
+    av.instance.LayoutOrder = 3
     addSlider(av, 1, "hitMagnitude", "Magnitude do acerto", 5, 250, "", 0)
     addSlider(av, 2, "hitOffset", "Offset do acerto", 0, 100, "", 0)
     addInfo(av, 3,
@@ -5252,15 +5726,17 @@ local function buildConfig()
         true)
 
     local dados = Widget.section({ parent = page, text = "Dados" })
-    dados.instance.LayoutOrder = 3
+    dados.instance.LayoutOrder = 4
     addButton(dados, 1, "Salvar configuração", "ghost", function()
         if State.save() then UI.notify("Configuração", "Salvo com sucesso.")
         else UI.notify("Configuração", "Seu executor não permite salvar arquivos.", 4) end
     end)
     addButton(dados, 2, "Carregar configuração", "ghost", function()
         if State.load() then
-            UI.rebuild()
+            Theme.applyConfig(State.config)
+            UI.applyMenuScale(State.config.menuScale)
             UI.notify("Configuração", "Carregada.")
+            task.defer(function() UI.remount() end)
         else
             UI.notify("Configuração", "Nenhum arquivo encontrado.", 4)
         end
@@ -5268,8 +5744,70 @@ local function buildConfig()
     addButton(dados, 3, "Diagnóstico do jogo", "solid", function() UI.showDiagnostic() end)
     addButton(dados, 4, "Checar marcação da conta", "danger", function() UI.checkFlag() end)
 
+    -- ── Perfis nomeados
+    local prof = Widget.section({ parent = page, text = "Perfis de Configuração" })
+    prof.instance.LayoutOrder = 5
+
+    local nameInput = Widget.input({
+        parent = prof.body,
+        text = "Nome do perfil",
+        placeholder = "ex: farm seguro",
+    })
+    nameInput.instance.LayoutOrder = 1
+
+    addButton(prof, 2, "Criar perfil com o estado atual", "ghost", function()
+        local ok, err = State.profileCreate(nameInput.get())
+        if ok then UI.notify("Perfil", "Perfil criado.")
+        else UI.notify("Perfil", tostring(err), 4) end
+        refreshProfileInfo()
+    end)
+    addButton(prof, 3, "Salvar (criar ou substituir)", "solid", function()
+        local ok, err = State.profileSave(nameInput.get())
+        if ok then UI.notify("Perfil", "Estado salvo no perfil.")
+        else UI.notify("Perfil", tostring(err), 4) end
+        refreshProfileInfo()
+    end)
+    addButton(prof, 4, "Carregar perfil", "ghost", function()
+        local ok, err = State.profileLoad(nameInput.get())
+        if not ok then
+            UI.notify("Perfil", tostring(err), 4)
+            return
+        end
+        Theme.applyConfig(State.config)
+        UI.applyMenuScale(State.config.menuScale)
+        task.defer(function()
+            UI.remount()
+            UI.notify("Perfil", "Perfil carregado.")
+        end)
+    end)
+    addButton(prof, 5, "Apagar perfil", "danger", function()
+        local ok, err = State.profileDelete(nameInput.get())
+        if ok then UI.notify("Perfil", "Perfil apagado.")
+        else UI.notify("Perfil", tostring(err), 4) end
+        refreshProfileInfo()
+    end)
+    addButton(prof, 6, "Definir como autoload", "ghost", function()
+        local ok, err = State.profileSetAutoload(nameInput.get())
+        if ok then UI.notify("Perfil", "Perfil definido como autoload.")
+        else UI.notify("Perfil", tostring(err), 4) end
+        refreshProfileInfo()
+    end)
+    addButton(prof, 7, "Limpar autoload", "ghost", function()
+        local ok, err = State.profileSetAutoload(nil)
+        if ok then UI.notify("Perfil", "Autoload removido.")
+        else UI.notify("Perfil", tostring(err), 4) end
+        refreshProfileInfo()
+    end)
+
+    local profInfo = Widget.info({
+        parent = prof.body,
+        text = profileSummary(),
+        order = 8,
+    })
+    UI.profileInfo = profInfo
+
     local sobre = Widget.section({ parent = page, text = "Sobre" })
-    sobre.instance.LayoutOrder = 4
+    sobre.instance.LayoutOrder = 6
     -- game.GameId pode faltar em ambientes restritos; formatar com nil
     -- derrubaria a construção inteira da página.
     addInfo(sobre, 1,
@@ -5459,6 +5997,11 @@ end
 -- ── Atualização ao vivo ──────────────────────────────────────────────────────
 
 local function refreshLoop()
+    -- Captura o gui DESTA montagem. Se a interface for remontada, o gui antigo
+    -- é destruído e este loop sai sozinho — em vez de continuar escrevendo num
+    -- ScreenGui morto (e acumular um loop por remontagem).
+    local myGui = gui
+
     task.spawn(function()
         -- Identidade: uma vez só, não muda durante a sessão.
         local info = Stats.playerInfo()
@@ -5469,13 +6012,14 @@ local function refreshLoop()
         end
 
         local last = os.clock()
-        while gui and gui.Parent do
+        while myGui and myGui.Parent do
             local now = os.clock()
             local dt = now - last
             last = now
 
             pcall(function()
                 local snap = Stats.snapshot()
+                if UI.serverInfo then UI.serverInfo:set(serverSummary()) end
 
                 -- Cartões
                 if statCards.players then
@@ -5527,14 +6071,37 @@ end
 
 -- ── Montagem ─────────────────────────────────────────────────────────────────
 
--- Referência tardia ao módulo Lobby, para evitar dependência circular na carga.
-local Lobby_ref = nil
-
 function UI.bindLobby(mod)
-    Lobby_ref = mod
+    if mod then Lobby_ref = mod end
+end
+
+function UI.bindServer(mod)
+    if mod then Server_ref = mod end
+end
+
+-- Tamanho do menu em tempo real. O UIScale é recriado a cada montagem, então
+-- a função tolera UI.scale nil (antes do mount) sem quebrar.
+function UI.applyMenuScale(value)
+    local pct = math.clamp(tonumber(value) or 100, 70, 140)
+    State.config.menuScale = pct
+    if UI.scale then UI.scale.Scale = pct / 100 end
+    return pct
+end
+
+-- Registra um hook executado depois de cada montagem (inclusive a primeira).
+function UI.onRemount(fn)
+    if type(fn) == "function" then table.insert(remountHooks, fn) end
+    return fn
+end
+
+function UI.currentTab()
+    return activeTab
 end
 
 function UI.mount()
+    if gui then UI.unmount() end
+    connections = {}
+
     buildRoot()
     buildHeader()
     buildSidebar()
@@ -5558,23 +6125,58 @@ function UI.mount()
 
     UI.selectTab("home")
 
-    UserInputService.InputBegan:Connect(function(input, processed)
+    track(UserInputService.InputBegan:Connect(function(input, processed)
         if processed then return end
-        if input.KeyCode == Enum.KeyCode.RightControl then
+        local code = keyFromName(State.config.menuKey)
+        if code ~= nil and input.KeyCode == code then
             UI.setVisible(not UI.isVisible())
         end
-    end)
+    end))
 
     UI.setStatus(("Pronto · %s"):format(Util.executorName()))
     refreshLoop()
+
+    for _, fn in ipairs(remountHooks) do
+        local ok, err = pcall(fn, gui)
+        if not ok then warn("[VHub] hook de remonte falhou: " .. tostring(err)) end
+    end
+
     return gui
 end
 
+-- Remonta a interface preservando aba, visibilidade e estado minimizado.
+-- Usado quando o tema muda (as instâncias antigas guardaram cores).
+function UI.remount()
+    local tab = activeTab
+    local wasVisible = gui and gui.Enabled
+    local wasMinimized = minimized
+
+    UI.unmount()
+    local newGui = UI.mount()
+
+    if tab then UI.selectTab(tab) end
+    if wasMinimized then UI.setMinimized(true) end
+    if wasVisible ~= nil then UI.setVisible(wasVisible) end
+    return newGui
+end
+
 function UI.unmount()
+    for _, conn in ipairs(connections) do
+        pcall(function() conn:Disconnect() end)
+    end
+    connections = {}
+
     if gui then gui:Destroy(); gui = nil end
+
     UI.controls = {}
     tabs, pages = {}, {}
     statCards = {}
+    toasts = {}
+    toastHolder = nil
+    root, sidebar, content, statusBar = nil, nil, nil, nil
+    UI.scale = nil
+    activeTab = "home"
+    minimized = false
 end
 
 return UI
@@ -5623,6 +6225,7 @@ local Game_     = __req("core/game")
 local Stats     = __req("core/stats")
 local Mission   = __req("features/mission")
 local Lobby     = __req("features/lobby")
+local Server    = __req("features/server")
 local Post      = __req("features/postmission")
 local Visuals   = __req("features/visuals")
 local Utility   = __req("features/utility")
@@ -5649,12 +6252,22 @@ Hub.placeKind = kind
 
 Interface.VERSION = Hub.version
 Interface.bindLobby(Lobby)
+Interface.bindServer(Server)
 
--- Preferências antes da UI, para os controles nascerem certos.
+-- Preferências antes da UI, para os controles nascerem certos. O autoload tem
+-- a última palavra: é o perfil que o usuário mandou carregar em toda entrada.
 local loaded = State.load()
+local autoloaded, autoloadName = State.loadAutoload()
+Theme.applyConfig(State.config)
 
-local screenGui = Interface.mount()
-Visuals.mount(screenGui)
+-- O ESP vive dentro do ScreenGui da interface. Toda remontagem (mudança de
+-- tema, por exemplo) precisa desligar o antigo e montar no gui novo.
+Interface.onRemount(function(screenGui)
+    Visuals.unmount()
+    Visuals.mount(screenGui)
+end)
+
+Interface.mount()
 
 -- ── Ligações estado -> feature ───────────────────────────────────────────────
 
@@ -5720,10 +6333,16 @@ Hub.shutdown = shutdown
 
 task.delay(0.8, function()
     Interface.notify("VHub",
-        ("v%s · %s · RightControl para abrir."):format(Hub.version, kind), 5)
+        ("v%s · %s · %s para abrir."):format(
+            Hub.version, kind, tostring(State.config.menuKey or "RightControl")), 5)
 
     if loaded then
         Interface.notify("Configuração", "Preferências restauradas.", 3)
+    end
+
+    if autoloaded then
+        Interface.notify("Perfil",
+            ("Perfil '%s' carregado automaticamente."):format(tostring(autoloadName)), 4)
     end
 
     if advice then
