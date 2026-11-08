@@ -219,6 +219,56 @@ local function napeOf(model)
 end
 Game.napeOf = napeOf
 
+-- Marker.Adornee — quando o Titã está com um alvo marcado (nuca, braço, perna),
+-- o próprio jogo aponta a parte certa. O trz usa esta ordem: Marker primeiro,
+-- Nape como reserva. Seguir o Marker evita registrar o golpe na parte errada
+-- em Titãs grandes (Colossal) e em animações de ataque.
+function Game.markerTarget(model)
+    local marker = model:FindFirstChild("Marker")
+    if not marker then return nil end
+
+    local ok, adornee = pcall(function() return marker.Adornee end)
+    if ok and adornee and type(adornee.IsA) == "function" and adornee:IsA("BasePart") then
+        return adornee
+    end
+    return nil
+end
+
+function Game.targetOf(titan)
+    return titan and (titan.target or titan.nape) or nil
+end
+
+-- Três sinais de Titã vivo, todos usados por scripts que funcionam:
+--   Humanoid.Health > 0
+--   atributos Dead / Killed ausentes
+--   Fake.Head.CanCollide verdadeiro (o jogo derruba a colisão ao morrer)
+-- Ler atributo de Instance pode falhar em executor restrito; pcall protege.
+local function attrTrue(model, name)
+    local ok, value = pcall(function() return model:GetAttribute(name) end)
+    return ok and value == true
+end
+
+function Game.isTitanAlive(model)
+    local hum = model:FindFirstChildOfClass("Humanoid")
+    if not hum or hum.Health <= 0 then return false, hum end
+    if attrTrue(model, "Dead") or attrTrue(model, "Killed") then return false, hum end
+
+    local fake = model:FindFirstChild("Fake")
+    local head = fake and fake:FindFirstChild("Head")
+    if head and head:IsA("BasePart") and head.CanCollide == false then
+        return false, hum
+    end
+
+    return true, hum
+end
+
+-- O Titã do próprio jogador (shifter) aparece como Attack_Titan na pasta.
+-- Atacá-lo é autossabotagem; o Tekkit pausa o farm inteiro enquanto ele existe.
+function Game.isShifter()
+    local folder = Game.getTitanFolder()
+    return folder ~= nil and folder:FindFirstChild("Attack_Titan") ~= nil
+end
+
 -- Outros alvos válidos: o script de referência troca a nuca por estes conforme
 -- o que o Marker aponta. Útil para "Nape Multi".
 function Game.hitParts(model)
@@ -269,20 +319,26 @@ function Game.getTitans(force)
     local list = {}
     for _, model in ipairs(folder:GetChildren()) do
         if model:IsA("Model") then
-            local hum = model:FindFirstChildOfClass("Humanoid")
-            if hum and hum.Health > 0 then
+            local alive, hum = Game.isTitanAlive(model)
+            if alive then
                 local nape = napeOf(model)
-                if nape then
+                local marker = Game.markerTarget(model)
+                local target = marker or nape
+                if nape and target then
                     local root = model.PrimaryPart or model:FindFirstChild("HumanoidRootPart")
                     if root then
                         local kind, isBoss = Game.classify(model)
+                        local isAttack = string.find(string.lower(model.Name), "attack", 1, true) ~= nil
                         table.insert(list, {
                             model = model,
                             humanoid = hum,
                             nape = nape,
+                            target = target,
+                            marker = marker,
                             root = root,
                             kind = kind,
                             isBoss = isBoss,
+                            isAttack = isAttack,
                             dist = myPos and (root.Position - myPos).Magnitude or math.huge,
                             hp = hum.Health,
                             maxHp = hum.MaxHealth,
@@ -343,7 +399,8 @@ end
 function Game.getBlade()
     local c = Game.getCharacter()
     if not c then return nil end
-    local rig = c:FindFirstChild("Rig_" .. (getLocalPlayer().Name))
+    local lp = getLocalPlayer()
+    local rig = lp and c:FindFirstChild("Rig_" .. lp.Name) or nil
     if not rig then
         -- fallback: qualquer filho que comece com Rig_
         for _, d in ipairs(c:GetChildren()) do
@@ -396,9 +453,14 @@ function Game.diagnose()
         isAOTR = Game.isAOTR(),
         hasTitanFolder = folder ~= nil,
         remotesFound = r.ok,
+        remoteGetClass = r.GET and r.GET.ClassName or nil,
+        remotePostClass = r.POST and r.POST.ClassName or nil,
+        shifter = Game.isShifter(),
         titanCount = #titans,
         sampleTitan = nil,
         sampleNape = nil,
+        sampleTarget = nil,
+        sampleMarker = false,
         sampleKind = nil,
         sampleParts = nil,
         refills = Game.getRefills(),
@@ -415,6 +477,8 @@ function Game.diagnose()
         local t = titans[1]
         report.sampleTitan = t.name
         report.sampleNape = t.nape and t.nape.Name or nil
+        report.sampleTarget = t.target and t.target.Name or nil
+        report.sampleMarker = t.marker ~= nil
         report.sampleKind = t.kind
         local parts = {}
         local hitboxes = t.model:FindFirstChild("Hitboxes")
@@ -714,6 +778,12 @@ State.flags = {
     espHealth       = true,
     espNape         = true,
     espBossOnly     = false,
+    -- ESP de qualquer lugar: Highlight + nameplate ignoram a distância e a
+    -- parede. As setas avisam quando o Titã está fora da tela ou atrás de você.
+    espHighlight    = true,
+    espNameplate    = true,
+    espArrows       = true,
+    espAnywhere     = true,
 
     -- ── Sistema
     antiAfk         = true,
@@ -731,10 +801,19 @@ State.config = {
     tpCooldown      = 0.4,
 
     -- Magnitude declarada em Hitboxes/Register.
-    -- 12 é o comprimento aproximado da lâmina. Fontes usam 143+ e até 215-230,
-    -- o que é fisicamente impossível e o sinal mais fácil de auditar.
-    hitMagnitude    = 12,
+    -- O valor precisa cobrir a distância real até a hitbox. Com a lâmina
+    -- (~12 studs) e o teleporte para a nuca (offset 4), 60 dá folga sem chegar
+    -- aos 143–850 dos scripts públicos, que são o sinal mais fácil de auditar.
+    hitMagnitude    = 60,
     hitOffset       = 0,
+
+    -- Remote usado em Hitboxes/Register.
+    --   "POST"  → RemoteEvent FireServer (Facu v8, trz, Smooth, dio, Asta)
+    --   "GET"   → RemoteFunction InvokeServer (Tekkit, StwFate)
+    --   "Ambos" → tenta os dois; cobre versões diferentes do jogo.
+    -- O padrão é POST porque é o que o catálogo de endpoints atual e a maioria
+    -- dos scripts recentes usam. O botão "Testar golpe" mostra qual respondeu.
+    registerMethod  = "POST",
 
     -- Nuca (tamanho de fábrica: Vector3.new(15, 9, 11))
     napeScale       = 1.5,
@@ -765,7 +844,7 @@ State.config = {
     skillRight      = "Tank VIII",
 
     -- Visual
-    espMaxDist      = 900,
+    espMaxDist      = 1200,
     espColor        = "Vermelho",
     espThickness    = 1.4,
 
@@ -1094,12 +1173,9 @@ local Players = game:GetService("Players")
 local RunService = game:GetService("RunService")
 local HttpService = game:GetService("HttpService")
 
-local _LP_cache
-local function LP()
-    if _LP_cache and _LP_cache.Parent then return _LP_cache end
-    _LP_cache = Players.LocalPlayer
-    return _LP_cache
-end
+-- LocalPlayer resolvido a cada uso: o executor pode injetar antes do jogador
+-- existir, e um upvalue nil congelaria amigos/perfil para sempre.
+local function getLocalPlayer() return Players.LocalPlayer end
 
 -- ── Tempo de sessão ──────────────────────────────────────────────────────────
 
@@ -1173,7 +1249,7 @@ end
 -- IsFriendsWith é uma chamada de rede; fazer para 30 jogadores a cada frame
 -- seria absurdo. Cacheamos por 20 segundos.
 
-local friendsCache = { list = {}, at = 0 }
+local friendsCache = { list = {}, at = -1e9 }
 
 function Stats.friendsHere(force)
     local now = os.clock()
@@ -1182,11 +1258,14 @@ function Stats.friendsHere(force)
     end
 
     local found = {}
+    local me = getLocalPlayer()
+    if not me then return found end
+
     for _, p in ipairs(Players:GetPlayers()) do
-        if p ~= LocalPlayer then
+        if p ~= me then
             -- userId ou Player: a API aceita ambos nas versões atuais.
             local ok, isFriend = pcall(function()
-                return LP():IsFriendsWith(p.UserId)
+                return me:IsFriendsWith(p.UserId)
             end)
             if ok and isFriend then
                 table.insert(found, p)
@@ -1204,7 +1283,7 @@ end
 -- simplesmente não mostra o campo.
 
 local UNIVERSE_ID = 4658598196
-local universeCache = { count = nil, max = nil, at = 0 }
+local universeCache = { count = nil, max = nil, at = -1e9 }
 
 function Stats.universePlayers()
     local now = os.clock()
@@ -1218,7 +1297,7 @@ function Stats.universePlayers()
     universeCache.at = now
 
     task.spawn(function()
-        local ok, result = pcall(function()
+        local ok, playing, max = pcall(function()
             local url = ("https://games.roblox.com/v1/games?universeIds=%d"):format(UNIVERSE_ID)
             local res = req({ Url = url, Method = "GET" })
             if not res or not res.Body then return nil end
@@ -1229,8 +1308,9 @@ function Stats.universePlayers()
             end
             return nil
         end)
-        if ok and result then
-            universeCache.count = result
+        if ok and playing then
+            universeCache.count = playing
+            universeCache.max = max
         end
     end)
 
@@ -1240,7 +1320,7 @@ end
 -- ── Jogador local ────────────────────────────────────────────────────────────
 
 function Stats.playerInfo()
-    local lp = LocalPlayer
+    local lp = getLocalPlayer()
     if not lp then return nil end
 
     local ok, thumb = pcall(function()
@@ -1668,8 +1748,19 @@ local function pick(...)
 end
 
 Util.getGenv      = pick(getgenv, getfenv)
-Util.setClipboard = pick(setclipboard, toclipboard, syn and syn.write_clipboard)
 Util.identify     = pick(identifyexecutor, getexecutorname)
+
+-- Synapse expõe write_clipboard recebendo uma TABELA, enquanto setclipboard e
+-- toclipboard recebem texto. Escolher a referência crua fazia a cópia falhar
+-- só nesse executor; aqui a assinatura é normalizada.
+local directClipboard = pick(setclipboard, toclipboard)
+if directClipboard then
+    Util.setClipboard = directClipboard
+elseif syn and syn.write_clipboard then
+    Util.setClipboard = function(text) syn.write_clipboard({ text }) end
+else
+    Util.setClipboard = nil
+end
 
 function Util.executorName()
     local ok, name = pcall(function() return Util.identify() end)
@@ -3152,11 +3243,20 @@ local __src = [=[
 
       Ataque (bracketed):
         POST("Attacks", "Slash", true)      abre o golpe
-        GET("Hitboxes", "Register", part, magnitude, offset)
-        POST("Attacks", "Slash", false)     fecha o golpe
+        POST("Hitboxes", "Register", part, magnitude, offset)
+        POST("Attacks", "Slash", false)     fecha o golpe (só ao parar)
 
         O par abrir/fechar importa: o servidor valida a JANELA do golpe, não
         um disparo isolado. Mandar só o Register não registra dano.
+
+        Register: o catálogo de endpoints do Facu v8 e os scripts recentes
+        (trz, Smooth, dio, Asta) usam POST:FireServer; Tekkit e StwFate usam
+        GET:InvokeServer. Como os dois grupos existem em versões diferentes do
+        jogo, o método é configurável e "Ambos" cobre os dois. O padrão é POST.
+
+        Os scripts que farmam de verdade NÃO fecham o Slash a cada golpe:
+        abrem uma vez e registram vários. Fechar no mesmo frame cancelava a
+        janela e era um dos motivos de "não causar dano".
 
       Escapar de agarrão:
         POST("Attacks", "Slash_Escape")
@@ -3172,9 +3272,10 @@ local __src = [=[
 
     MAGNITUDE — a decisão de risco
     ---------------------------------
-    Fontes usam 143+rand(10) e até rand(215,230). A segunda é fisicamente
-    impossível: o alcance real da lâmina é o comprimento da arma. É o dado mais
-    fácil do servidor auditar. O padrão aqui é BAIXO e o valor alto é opt-in.
+    Fontes usam 143+rand(10), rand(215,230), rand(625,850). Os valores altos são
+    fisicamente impossíveis e o dado mais fácil do servidor auditar. O padrão
+    aqui é 60: cobre o alcance curto com folga e fica abaixo do que os scripts
+    públicos usam. O valor alto é opt-in no Config.
 --]]
 
 
@@ -3196,6 +3297,7 @@ Mission._lastStrike = 0
 Mission._slashOpen = false
 Mission._tracked = {}
 Mission._missionStart = os.clock()
+Mission._wantGrabs = false
 
 -- ── Pose de ataque ───────────────────────────────────────────────────────────
 
@@ -3216,18 +3318,135 @@ function Mission.napePose(titan, offset, height)
 end
 
 -- ── Ataque ───────────────────────────────────────────────────────────────────
--- Abre, registra e fecha. Os três passos no mesmo frame, porque o servidor
--- valida a janela do golpe.
+-- Abre a janela do Slash e registra o golpe. O fechamento é feito por
+-- Mission.stopAttack() ao parar o auto kill, não a cada ataque.
+
+-- Distância infinita (jogador sem personagem) não pode ir para %d: em Lua 5.4
+-- math.huge não tem representação inteira e string.format lança erro.
+local function distText(dist)
+    dist = tonumber(dist)
+    if not dist or dist ~= dist or dist == math.huge then return "—" end
+    return tostring(math.floor(dist))
+end
+
+function Mission.hitMagnitude()
+    local base = tonumber(State.config.hitMagnitude) or 60
+    base = math.clamp(base, 1, 10000)
+    -- Jitter de 4%: magnitude constante é uma assinatura trivial de detectar.
+    local spread = math.max(1, base * 0.04)
+    return math.floor(base + (math.random() * 2 - 1) * spread + 0.5)
+end
+
+local REGISTER_GET_INTERVAL = 0.35
+local lastGetRegister = 0
+
+function Mission.registerHit(part, magnitude, offset, method)
+    method = method or State.config.registerMethod or "POST"
+    local postOk, getResult = false, nil
+
+    if method == "POST" or method == "Ambos" then
+        postOk = Game.post("Hitboxes", "Register", part, magnitude, offset)
+    end
+    if method == "GET" or method == "Ambos" then
+        local now = os.clock()
+        -- InvokeServer cede a thread até o servidor responder. Em "Ambos" ele
+        -- é limitado para não empilhar uma chamada por golpe.
+        if method == "GET" or (now - lastGetRegister) >= REGISTER_GET_INTERVAL then
+            lastGetRegister = now
+            getResult = Game.get("Hitboxes", "Register", part, magnitude, offset)
+        end
+    end
+
+    return postOk == true, getResult
+end
 
 function Mission.strike(titan)
-    if not titan or not titan.nape then return false end
+    local part = Game.targetOf(titan)
+    if not part then return false end
 
     Game.post("Attacks", "Slash", true)
-    local ok = Game.get("Hitboxes", "Register",
-        titan.nape, State.config.hitMagnitude, State.config.hitOffset)
-    Game.post("Attacks", "Slash", false)
+    Mission._slashOpen = true
 
-    return ok
+    local magnitude = Mission.hitMagnitude()
+    local offset = tonumber(State.config.hitOffset) or 0
+    local postOk, getResult = Mission.registerHit(part, magnitude, offset)
+
+    Mission.lastStrike = {
+        part = part,
+        magnitude = magnitude,
+        offset = offset,
+        method = State.config.registerMethod or "POST",
+        post = postOk,
+        get = getResult,
+        at = os.clock(),
+    }
+
+    return postOk or getResult ~= nil
+end
+
+-- Fecha a janela do golpe. Chamado ao desligar o auto kill/descarregar, não a
+-- cada ataque: fechar no mesmo frame cancelava o Register.
+function Mission.stopAttack()
+    if not Mission._slashOpen then return end
+    Mission._slashOpen = false
+    Game.post("Attacks", "Slash", false)
+end
+
+-- Diagnóstico de combate em um clique. Mantém a vida antes/depois e reporta o
+-- tipo real dos remotes, para separar "o script não chamou" de "o servidor
+-- recusou" sem adivinhação.
+function Mission.testStrike()
+    local titans = Game.getTitans(true)
+    if #titans == 0 then
+        return false, "Nenhum Titã vivo encontrado. Entre numa missão e espere a onda."
+    end
+
+    local titan = titans[1]
+    local part = Game.targetOf(titan)
+    if not part then return false, "O Titã não tem Nape nem Marker. Veja o Diagnóstico." end
+
+    local before = tonumber(titan.hp) or 0
+    local remotes = Game.getRemotes()
+    local sent = Mission.strike(titan)
+    local strike = Mission.lastStrike or {}
+
+    local detail = ("Alvo: %s · parte: %s · %s studs\nVida antes: %d\nMétodo: %s · magnitude %d · offset %s\nGET=%s  POST=%s"):format(
+        tostring(titan.name), tostring(part.Name), distText(titan.dist),
+        math.floor(before),
+        tostring(strike.method or State.config.registerMethod or "POST"),
+        math.floor(tonumber(strike.magnitude) or 0),
+        tostring(strike.offset or State.config.hitOffset or 0),
+        remotes.GET and remotes.GET.ClassName or "ausente",
+        remotes.POST and remotes.POST.ClassName or "ausente")
+
+    task.delay(0.7, function()
+        local after = titan.humanoid and titan.humanoid.Health or before
+        local damage = before - after
+        local tail
+        if damage > 0 then
+            tail = ("Vida agora: %d · dano: %d\nO servidor ACEITOU o golpe."):format(
+                math.floor(after), math.floor(damage))
+        elseif sent then
+            tail = ("Vida agora: %d · sem dano ainda\nO remote saiu, mas o servidor não aplicou. Teste GET/Ambos ou aumente a magnitude."):format(
+                math.floor(after))
+        else
+            tail = "O remote recusou a chamada. Veja Config → Diagnóstico."
+        end
+        Util.notify("Teste de golpe", tail, 12)
+    end)
+
+    return sent, detail
+end
+
+function Mission.statusLine()
+    local t = Mission.target
+    local alvo = "nenhum"
+    if t then
+        alvo = ("%s · %s studs"):format(
+            tostring(t.name), distText(t.dist))
+    end
+    return ("Abates: %d · Escapes: %d\nAlvo atual: %s"):format(
+        Mission.kills, Mission.escapes, alvo)
 end
 
 -- ── Escape de agarrão ────────────────────────────────────────────────────────
@@ -3239,7 +3458,7 @@ Mission.grabbed = false
 Mission.escapes = 0
 
 function Mission.watchGrabs()
-    if escapeConn then return end
+    if escapeConn or not Mission._wantGrabs then return end
 
     local lp = Game.getLocalPlayer()
     local pg = lp and lp:FindFirstChild("PlayerGui")
@@ -3247,7 +3466,8 @@ function Mission.watchGrabs()
     local buttons = iface and iface:FindFirstChild("Buttons")
 
     if not buttons then
-        -- Ainda não montou: tenta de novo em instantes.
+        -- Ainda não montou: tenta de novo em instantes. O retry confere a flag
+        -- para não reconectar depois de Mission.stop()/descarregamento.
         task.delay(3, Mission.watchGrabs)
         return
     end
@@ -3420,13 +3640,19 @@ function Mission.shouldHold()
 end
 
 function Mission.autoKillTick()
+    -- Enquanto o jogador É um Titã, atacar é autossabotagem (regra do Tekkit).
+    if Game.isShifter() then return end
+
     local titans = Game.getTitans()
     if #titans == 0 then return end
 
     local range = State.config.killRange
     local target
     for _, t in ipairs(titans) do
-        if t.dist <= range then target = t break end
+        if not t.isAttack and Game.targetOf(t) and t.dist <= range then
+            target = t
+            break
+        end
     end
 
     if not target then
@@ -3573,11 +3799,11 @@ function Mission.trackKills()
         seen[t.model] = true
         local rec = Mission._tracked[t.model]
         if rec then rec.hp = t.hp; rec.seen = now
-        else Mission._tracked[t.model] = { hp = t.hp, seen = now } end
+        else Mission._tracked[t.model] = { hp = t.hp, seen = now, isAttack = t.isAttack } end
     end
     for model, rec in pairs(Mission._tracked) do
         if not seen[model] then
-            if (now - rec.seen) < 2 and State.flags.autoKill then
+            if (now - rec.seen) < 2 and State.flags.autoKill and not rec.isAttack then
                 Mission.kills = Mission.kills + 1
             end
             Mission._tracked[model] = nil
@@ -3589,6 +3815,7 @@ end
 
 function Mission.start()
     if Mission._conn then return end
+    Mission._wantGrabs = true
     Mission.watchGrabs()
 
     Mission._conn = RunService.RenderStepped:Connect(function()
@@ -3624,12 +3851,15 @@ end
 function Mission.stop()
     if Mission._conn then Mission._conn:Disconnect(); Mission._conn = nil end
     if escapeConn then escapeConn:Disconnect(); escapeConn = nil end
+    Mission._wantGrabs = false
+    Mission.stopAttack()
     Mission.restoreNapes()
 end
 
 function Mission.newMission()
     Mission._missionStart = os.clock()
     Mission.kills = 0
+    Mission.target = nil
     Mission._tracked = {}
 end
 
@@ -3811,16 +4041,22 @@ end
 function Post.setupRejoin()
     local lp = Game.getLocalPlayer()
     if not lp then return end
+    if Post._rejoinConn then return end
 
-    lp.OnTeleport:Connect(function()
+    Post._rejoinConn = lp.OnTeleport:Connect(function()
         Post.lastAction = "Teleportando…"
     end)
 
-    -- Detecta troca de lugar por mudança de PlaceId entre leituras.
+    -- Detecta troca de lugar por mudança de PlaceId entre leituras. O laço é
+    -- cancelável: sem isso, descarregar o script deixava uma corrotina viva
+    -- para sempre e uma nova era criada a cada Post.start().
+    if Post._watching then return end
+    Post._watching = true
     task.spawn(function()
         local lastPlace = game.PlaceId
-        while true do
+        while Post._watching do
             task.wait(2)
+            if not Post._watching then break end
             if game.PlaceId ~= lastPlace then
                 lastPlace = game.PlaceId
                 Post.lastAction = "Lugar mudou"
@@ -3867,6 +4103,8 @@ end
 
 function Post.stop()
     if Post._conn then Post._conn:Disconnect(); Post._conn = nil end
+    if Post._rejoinConn then Post._rejoinConn:Disconnect(); Post._rejoinConn = nil end
+    Post._watching = false
 end
 
 return Post
@@ -4277,19 +4515,33 @@ local __src = [=[
     AOTR · ESP (Visuals)
     Arquivo: src/features/visuals.lua
 
-    Caixas 2D, linhas e texto projetados do espaço 3D para a tela via
-    Camera:WorldToViewportPoint. Nada é parentado no Workspace, então o ESP
-    não aparece para outros jogadores nem colide com nada.
+    TRÊS CAMADAS, porque uma só não cobre "ver de qualquer lugar":
+
+      1. Highlight 3D (Adornee = modelo, DepthMode = AlwaysOnTop)
+         Atravessa parede, terreno e distância. É o que faz o Titã ficar
+         visível mesmo do outro lado do mapa. Parenteado no modelo, então
+         não replica para outros jogadores.
+
+      2. BillboardGui (nameplate preso ao Titã)
+         Nome, distância e vida sempre acima dele. MaxDistance = 0 significa
+         sem limite de distância. Só o cliente vê.
+
+      3. Projeção 2D no ScreenGui
+         Caixa, linha, vida, marcador de nuca — os mesmos elementos da versão
+         anterior. Quando o Titã sai da tela ou fica atrás da câmera, entra uma
+         SETA na borda apontando para ele; sem isso, Titã fora do campo de
+         visão simplesmente desaparecia.
 
     DESEMPENHO — a decisão central
     ------------------------------
-    O jeito ingênuo é criar Instance novas a cada frame. Com 30 Titãs e 4
-    elementos cada, isso são 120 instâncias destruídas e recriadas por frame:
-    o coletor de lixo do Roblox engasga e o FPS cai.
+    O jeito ingênuo é criar Instance novas a cada frame. Com 30 Titãs e vários
+    elementos cada, isso são centenas de instâncias destruídas e recriadas por
+    frame: o coletor de lixo do Roblox engasga e o FPS cai.
 
-    Aqui as instâncias são criadas UMA vez por Titã e depois só têm suas
-    propriedades atualizadas. Um pool reutiliza os desenhos de Titãs que
-    saíram da tela. É a diferença entre 200 FPS e 40.
+    Aqui as instâncias 2D são criadas UMA vez por Titã e depois só têm suas
+    propriedades atualizadas; um pool reutiliza os desenhos de Titãs que saíram
+    da lista. Highlight e nameplate também são criados uma vez e só reutilizados.
+    O tick é limitado a ~20 Hz: 60 Hz de ESP não melhora nada e custa CPU.
 --]]
 
 
@@ -4302,25 +4554,51 @@ local Theme = __req("core/theme")
 
 local Visuals = {}
 
-local Players = game:GetService("Players")
+-- Luau expõe math.atan2; Lua 5.4 só tem math.atan(y, x). O teste roda no
+-- interpretador padrão, então a função é resolvida uma vez.
+local atan2 = math.atan2 or function(y, x) return math.atan(y, x) end
+
 local RunService = game:GetService("RunService")
 local Workspace = game:GetService("Workspace")
 
-local _LP_cache
-local function LP()
-    if _LP_cache and _LP_cache.Parent then return _LP_cache end
-    _LP_cache = Players.LocalPlayer
-    return _LP_cache
+local screen = nil      -- ScreenGui
+local container = nil   -- Frame que segura os desenhos 2D
+local drawings = {}     -- [model] = { box, line, label, hpBg, hpFill, hpText, napeDot, arrow, arrowText }
+local highlights = {}   -- [model] = Highlight
+local nameplates = {}   -- [model] = BillboardGui
+local npLabels = {}     -- [model] = TextLabel dentro do BillboardGui
+local pool = {}         -- desenhos 2D livres para reuso
+
+local DRAW_KEYS = {
+    "box", "line", "label", "hpBg", "hpFill", "hpText", "napeDot",
+    "arrow", "arrowText",
+}
+local DRAW_2D_KEYS = {
+    "box", "line", "label", "hpBg", "hpFill", "hpText", "napeDot",
+}
+
+local function colorFor(titan)
+    if titan.isAttack then return Theme.color.ok end
+    if titan.isBoss then return Theme.color.accentHi end
+    return State.espColor()
 end
 
-local screen = nil      -- ScreenGui
-local container = nil   -- Frame que segura tudo
-local drawings = {}     -- [model] = { box, line, label, healthBg, healthFill, napeDot }
-local pool = {}         -- desenhos livres para reuso
+-- A distância vem como math.huge quando o jogador ainda não tem personagem
+-- (ou quando o root não está no espaço). string.format("%d") recusa infinito
+-- e derrubaria o tick inteiro, então o texto é montado aqui.
+local function distText(dist)
+    dist = tonumber(dist)
+    if not dist or dist ~= dist or dist == math.huge then return "—" end
+    return tostring(math.floor(dist))
+end
 
--- ── Construção do desenho ────────────────────────────────────────────────────
--- Cada Titã recebe um conjunto de Frames. Todos são filhos de `container` para
--- que um único Destroy limpe tudo.
+local function eachKey(map, fn)
+    local keys = {}
+    for k in pairs(map) do table.insert(keys, k) end
+    for _, k in ipairs(keys) do fn(k) end
+end
+
+-- ── Construção do desenho 2D ─────────────────────────────────────────────────
 
 local function buildDrawing()
     local d = {}
@@ -4339,8 +4617,6 @@ local function buildDrawing()
 
     if State.flags.espLine then
         -- linha da base da tela até o Titã: um Frame fino rotacionado.
-        -- Rotation em GuiObject é barato e evita refazer o cálculo com math.atan2
-        -- em coordenadas de tela já rotacionadas.
         d.line = Util.tag(Instance.new("Frame"))
         d.line.AnchorPoint = Vector2.new(0, 0.5)
         d.line.BorderSizePixel = 0
@@ -4396,33 +4672,68 @@ local function buildDrawing()
         s.Parent = d.napeDot
     end
 
+    if State.flags.espArrows then
+        -- seta de borda: aponta para Titã fora da tela ou atrás da câmera.
+        d.arrow = Util.tag(Instance.new("TextLabel"))
+        d.arrow.BackgroundTransparency = 1
+        d.arrow.BorderSizePixel = 0
+        d.arrow.Font = Theme.font.bold
+        d.arrow.Text = "▲"
+        d.arrow.TextSize = 22
+        d.arrow.TextStrokeTransparency = 0
+        d.arrow.TextStrokeColor3 = Color3.new(0, 0, 0)
+        d.arrow.AnchorPoint = Vector2.new(0.5, 0.5)
+        d.arrow.Size = UDim2.fromOffset(26, 26)
+        d.arrow.ZIndex = 7
+
+        d.arrowText = Util.tag(Instance.new("TextLabel"))
+        d.arrowText.BackgroundTransparency = 1
+        d.arrowText.Font = Theme.font.mono
+        d.arrowText.TextSize = 10
+        d.arrowText.TextStrokeTransparency = 0.2
+        d.arrowText.TextStrokeColor3 = Color3.new(0, 0, 0)
+        d.arrowText.TextXAlignment = Enum.TextXAlignment.Center
+        d.arrowText.AnchorPoint = Vector2.new(0.5, 0)
+        d.arrowText.Size = UDim2.fromOffset(120, 14)
+        d.arrowText.ZIndex = 7
+    end
+
     return d
 end
 
 local function parentDrawing(d)
-    for _, k in ipairs({ "box", "line", "label", "hpBg", "hpFill", "hpText", "napeDot" }) do
+    for _, k in ipairs(DRAW_KEYS) do
         if d[k] then d[k].Parent = container end
     end
 end
 
 local function hideDrawing(d)
-    for _, k in ipairs({ "box", "line", "label", "hpBg", "hpFill", "hpText", "napeDot" }) do
+    for _, k in ipairs(DRAW_KEYS) do
         if d[k] then d[k].Visible = false end
     end
 end
 
-local function acquire(model)
-    if drawings[model] then
-        -- reconstrói se as opções mudaram de forma incompatível
-        local needsBox = State.flags.espBox
-        local hasBox = drawings[model].box ~= nil
-        if needsBox ~= hasBox then
-            Visuals.destroyDrawing(model)
-        else
-            return drawings[model]
-        end
+local function hide2D(d)
+    for _, k in ipairs(DRAW_2D_KEYS) do
+        if d[k] then d[k].Visible = false end
     end
+end
 
+-- As opções de desenho mudam em runtime. Comparar uma assinatura evita
+-- reconstruir o desenho a cada frame e garante que ligar/desligar um elemento
+-- apareça na hora (a versão antiga só detectava a caixa).
+local function drawingSignature()
+    local parts = {}
+    for _, flag in ipairs({
+        "espBox", "espLine", "espText", "espHealth", "espNape", "espArrows",
+    }) do
+        table.insert(parts, State.flags[flag] and "1" or "0")
+    end
+    return table.concat(parts)
+end
+
+local function acquire(model)
+    if drawings[model] then return drawings[model] end
     local d = table.remove(pool) or buildDrawing()
     parentDrawing(d)
     drawings[model] = d
@@ -4437,22 +4748,111 @@ function Visuals.destroyDrawing(model)
     drawings[model] = nil
 end
 
--- ── Projeção ─────────────────────────────────────────────────────────────────
--- Converte um ponto 3D para pixels. WorldToViewportPoint devolve (Vector3, bool):
--- o bool é false quando o ponto está ATRÁS da câmera — sem checar isso, o ESP
--- desenha caixas espelhadas de Titãs que estão nas suas costas.
+-- ── Highlight / nameplate ────────────────────────────────────────────────────
 
-local function project(pos)
-    local cam = Workspace.CurrentCamera
-    local v, onScreen = cam:WorldToViewportPoint(pos)
-    if not onScreen or v.Z <= 0 then return nil end
+local function destroyHighlight(model)
+    local h = highlights[model]
+    if h then pcall(function() h:Destroy() end) end
+    highlights[model] = nil
+end
+
+local function ensureHighlight(titan)
+    local model = titan.model
+    if not model then return nil end
+
+    local h = highlights[model]
+    if h and h.Parent then return h end
+
+    h = Instance.new("Highlight")
+    h.Name = "VHub_ESP"
+    h.Adornee = model
+    h.DepthMode = Enum.HighlightDepthMode.AlwaysOnTop
+    h.FillTransparency = 0.7
+    h.OutlineTransparency = 0.05
+    h.Parent = model
+    highlights[model] = h
+    return h
+end
+
+local function destroyNameplate(model)
+    local np = nameplates[model]
+    if np then pcall(function() np:Destroy() end) end
+    nameplates[model] = nil
+    npLabels[model] = nil
+end
+
+local function ensureNameplate(titan)
+    local model = titan.model
+    if not model then return nil, nil end
+
+    local np = nameplates[model]
+    if np and np.Parent then return np, npLabels[model] end
+
+    local host = titan.root or model
+    if not host or host.Size == nil then return nil, nil end
+
+    np = Instance.new("BillboardGui")
+    np.Name = "VHub_Nameplate"
+    np.Adornee = host
+    np.AlwaysOnTop = true
+    np.MaxDistance = 0          -- 0 = sem limite de distância
+    np.Size = UDim2.new(0, 200, 0, 38)
+    local size = host.Size
+    local height = 4
+    if type(size) == "table" or type(size) == "userdata" then
+        height = tonumber(size.Y) or 4
+    end
+    np.StudsOffsetWorldSpace = Vector3.new(0, height + 3, 0)
+    np.Parent = host
+
+    local label = Instance.new("TextLabel")
+    label.Name = "Info"
+    label.BackgroundTransparency = 1
+    label.Size = UDim2.fromScale(1, 1)
+    label.Font = Theme.font.bold
+    label.TextSize = 12
+    label.TextStrokeTransparency = 0
+    label.TextStrokeColor3 = Color3.new(0, 0, 0)
+    label.TextWrapped = true
+    label.TextColor3 = Theme.color.text
+    label.Parent = np
+
+    nameplates[model] = np
+    npLabels[model] = label
+    return np, label
+end
+
+-- ── Projeção ─────────────────────────────────────────────────────────────────
+-- WorldToViewportPoint devolve (Vector3, bool): o bool é false quando o ponto
+-- está ATRÁS da câmera. Sem checar isso, o ESP desenha caixas espelhadas de
+-- Titãs que estão nas suas costas.
+
+local function project(pos, cam)
+    if not (cam and pos) then return nil end
+    local ok, v, onScreen = pcall(function()
+        return cam:WorldToViewportPoint(pos)
+    end)
+    if not ok or not onScreen or v.Z <= 0 then return nil end
     return Vector2.new(v.X, v.Y), v.Z
+end
+
+-- Direção em coordenadas de tela para o indicador de borda. Em espaço de
+-- câmera o eixo X cresce para a direita e o Y para cima; a tela cresce para
+-- baixo, daí o sinal invertido. Quando o ponto está atrás (Z >= 0), a direção
+-- é espelhada para a seta apontar para o lado certo ao virar.
+local function screenDirection(pos, cam)
+    if not (cam and pos) then return 0, 1 end
+    local rel = cam.CFrame:PointToObjectSpace(pos)
+    local sx = rel.X
+    local sy = -rel.Y
+    if rel.Z >= 0 then sx, sy = -sx, -sy end
+    if math.abs(sx) < 1e-3 and math.abs(sy) < 1e-3 then sy = 1 end
+    return sx, sy
 end
 
 -- ── Cálculo da caixa ─────────────────────────────────────────────────────────
 -- Estima a caixa 2D a partir do tamanho real do modelo, projetando os cantos.
--- Usar a altura do modelo em vez de um valor fixo faz a caixa acompanhar Titãs
--- de tamanhos diferentes — e no AOTR eles variam muito (Puro vs Colossal).
+-- A altura vem do modelo, então a caixa acompanha Puro, Anormal e Colossal.
 
 local function computeBox(titan, cam)
     local model = titan.model
@@ -4461,23 +4861,21 @@ local function computeBox(titan, cam)
     end)
 
     if not ok then
-        -- fallback: caixa em torno da raiz com tamanho padrão
         local p = titan.root.Position
-        local top = project(p + Vector3.new(0, 3, 0))
-        local bot = project(p - Vector3.new(0, 3, 0))
+        local top = project(p + Vector3.new(0, 3, 0), cam)
+        local bot = project(p - Vector3.new(0, 3, 0), cam)
         if not (top and bot) then return nil end
         local h = math.abs(bot.Y - top.Y)
         return { x = top.X - h * 0.3, y = top.Y, w = h * 0.6, h = h }
     end
 
-    -- os 8 cantos da bounding box em espaço de mundo
     local corners = {}
     for xi = -1, 1, 2 do
         for yi = -1, 1, 2 do
             for zi = -1, 1, 2 do
                 local world = cf * Vector3.new(
                     size.X / 2 * xi, size.Y / 2 * yi, size.Z / 2 * zi)
-                local scr = project(world)
+                local scr = project(world, cam)
                 if scr then table.insert(corners, scr) end
             end
         end
@@ -4494,39 +4892,119 @@ local function computeBox(titan, cam)
     return { x = minX, y = minY, w = maxX - minX, h = maxY - minY }
 end
 
--- ── Tick ─────────────────────────────────────────────────────────────────────
+-- ── Setas de borda ───────────────────────────────────────────────────────────
 
-local cam = Workspace.CurrentCamera
+local function showArrow(d, titan, cam, color)
+    if not (d.arrow and cam) then return end
+
+    local viewport = cam.ViewportSize or Vector2.new(1920, 1080)
+    local cx, cy = viewport.X / 2, viewport.Y / 2
+    local margin = math.min(90, math.min(cx, cy) * 0.35)
+    local halfW = math.max(cx - margin, 12)
+    local halfH = math.max(cy - margin, 12)
+
+    local sx, sy = screenDirection(titan.root.Position, cam)
+    local ax = math.max(math.abs(sx), 1e-3)
+    local ay = math.max(math.abs(sy), 1e-3)
+    local scale = math.min(halfW / ax, halfH / ay)
+
+    local px, py = cx + sx * scale, cy + sy * scale
+    d.arrow.Visible = true
+    d.arrow.Position = UDim2.fromOffset(px, py)
+    d.arrow.Rotation = math.deg(atan2(sy, sx)) + 90
+    d.arrow.TextColor3 = color
+
+    if d.arrowText then
+        d.arrowText.Visible = true
+        d.arrowText.Text = ("%s · %sm"):format(
+            tostring(titan.name), distText(titan.dist))
+        d.arrowText.Position = UDim2.fromOffset(px, py + 13)
+        d.arrowText.TextColor3 = color
+    end
+end
+
+-- ── Tick ─────────────────────────────────────────────────────────────────────
 
 function Visuals.tick()
     if not (screen and screen.Parent) then return end
 
-    cam = Workspace.CurrentCamera
-    local viewport = cam.ViewportSize
+    local cam = Workspace.CurrentCamera
+    if not cam then return end
+
+    local signature = drawingSignature()
+    if signature ~= Visuals._signature then
+        Visuals._signature = signature
+        eachKey(drawings, function(model) Visuals.destroyDrawing(model) end)
+    end
+
+    local viewport = cam.ViewportSize or Vector2.new(1920, 1080)
     local originX, originY = viewport.X / 2, viewport.Y
+    local color = State.espColor()
+    local maxDist = tonumber(State.config.espMaxDist) or 1200
+    local anywhere = State.flags.espAnywhere ~= false
 
     local titans = Game.getTitans()
     local live = {}
 
-    local color = State.espColor()
-    local maxDist = State.config.espMaxDist
-
     for _, titan in ipairs(titans) do
         live[titan.model] = true
 
-        -- Filtro de chefe: puros e anormais ficam de fora.
-        local skip = State.flags.espBossOnly and not titan.isBoss
+        -- Filtro de chefe e distância. "De qualquer lugar" ignora a distância,
+        -- mas nunca o filtro explícito de somente chefes.
+        local visible = not (State.flags.espBossOnly and not titan.isBoss)
+        if visible and not anywhere and titan.dist > maxDist then visible = false end
 
-        if not skip and titan.dist <= maxDist then
-            local box = computeBox(titan, cam)
+        if not visible then
+            local d = drawings[titan.model]
+            if d then hideDrawing(d) end
+            local h = highlights[titan.model]
+            if h then h.Enabled = false end
+            local np = nameplates[titan.model]
+            if np then np.Enabled = false end
+        else
+            local titanColor = colorFor(titan)
+
+            -- Camada 1 — atravessa paredes e distância.
+            if State.flags.espHighlight then
+                local h = ensureHighlight(titan)
+                if h then
+                    h.Enabled = true
+                    h.FillColor = titanColor
+                    h.OutlineColor = titanColor
+                end
+            else
+                destroyHighlight(titan.model)
+            end
+
+            -- Camada 2 — identificação presa ao Titã.
+            if State.flags.espNameplate then
+                local np, label = ensureNameplate(titan)
+                if np and label then
+                    np.Enabled = true
+                    local ratio = math.clamp(
+                        (tonumber(titan.hp) or 0) / math.max(tonumber(titan.maxHp) or 1, 1), 0, 1)
+                    label.Text = ("%s%s  ·  %sm  ·  %d%%"):format(
+                        titan.isAttack and "[VOCÊ] " or "",
+                        tostring(titan.name),
+                        distText(titan.dist),
+                        math.floor(ratio * 100))
+                    label.TextColor3 = titanColor
+                end
+            else
+                destroyNameplate(titan.model)
+            end
+
+            -- Camada 3 — projeção 2D.
+            local projected = project(titan.root.Position, cam)
+            local box = projected and computeBox(titan, cam) or nil
+            local d = acquire(titan.model)
+
             if box and box.w > 1 and box.h > 1 then
-                local d = acquire(titan.model)
-
                 if d.box then
                     d.box.Visible = true
                     d.box.Position = UDim2.fromOffset(box.x, box.y)
                     d.box.Size = UDim2.fromOffset(box.w, box.h)
-                    d.boxStroke.Color = color
+                    d.boxStroke.Color = titanColor
                     d.boxStroke.Thickness = State.config.espThickness
                 end
 
@@ -4535,25 +5013,21 @@ function Visuals.tick()
                     local fx, fy = box.x + box.w / 2, box.y + box.h
                     local dx, dy = fx - originX, fy - originY
                     local len = math.sqrt(dx * dx + dy * dy)
-                    local ang = math.deg(math.atan2(dy, dx))
+                    local ang = math.deg(atan2(dy, dx))
                     d.line.Position = UDim2.fromOffset(originX, originY)
                     d.line.Size = UDim2.fromOffset(len, 1)
                     d.line.Rotation = ang
-                    d.line.BackgroundColor3 = color
+                    d.line.BackgroundColor3 = titanColor
                     d.line.BackgroundTransparency = 0.35
                 end
 
                 if d.label then
                     d.label.Visible = true
-                    -- O tipo do Titã existe SÓ no nome do modelo — não há
-                    -- StringValue nem atributo de variante no rig.
-                    local parts = { titan.name }
-                    if State.flags.espText then
-                        table.insert(parts, string.format("%dm", math.floor(titan.dist)))
-                    end
-                    d.label.Text = table.concat(parts, "  ·  ")
-                    -- Chefes em destaque; puros em tom discreto.
-                    d.label.TextColor3 = titan.isBoss and Theme.color.accentHi or Theme.color.text
+                    d.label.Text = ("%s%s  ·  %sm"):format(
+                        titan.isAttack and "[VOCÊ] " or "",
+                        tostring(titan.name),
+                        distText(titan.dist))
+                    d.label.TextColor3 = titanColor
                     d.label.Position = UDim2.fromOffset(box.x - 30, box.y - 16)
                     d.label.Size = UDim2.fromOffset(box.w + 60, 14)
                 end
@@ -4561,7 +5035,8 @@ function Visuals.tick()
                 if d.hpBg and d.hpFill then
                     d.hpBg.Visible = true
                     d.hpFill.Visible = true
-                    local ratio = math.clamp(titan.hp / math.max(titan.maxHp, 1), 0, 1)
+                    local ratio = math.clamp(
+                        (tonumber(titan.hp) or 0) / math.max(tonumber(titan.maxHp) or 1, 1), 0, 1)
                     local barW, barH = 3, box.h
 
                     d.hpBg.Position = UDim2.fromOffset(box.x - 7, box.y)
@@ -4569,7 +5044,6 @@ function Visuals.tick()
                     d.hpFill.Position = UDim2.fromOffset(box.x - 7, box.y + barH * (1 - ratio))
                     d.hpFill.Size = UDim2.fromOffset(barW, barH * ratio)
 
-                    -- cor por faixa de vida: verde -> amarelo -> vermelho
                     local c
                     if ratio > 0.6 then c = Theme.color.ok
                     elseif ratio > 0.3 then c = Theme.color.warn
@@ -4578,7 +5052,7 @@ function Visuals.tick()
 
                     if d.hpText then
                         d.hpText.Visible = true
-                        d.hpText.Text = Util.abbrev(titan.hp)
+                        d.hpText.Text = Util.abbrev(titan.hp or 0)
                         d.hpText.Position = UDim2.fromOffset(box.x - 42, box.y + box.h / 2 - 6)
                         d.hpText.Size = UDim2.fromOffset(34, 12)
                         d.hpText.TextXAlignment = Enum.TextXAlignment.Right
@@ -4586,7 +5060,7 @@ function Visuals.tick()
                 end
 
                 if d.napeDot then
-                    local np = project(titan.nape.Position)
+                    local np = project(titan.nape.Position, cam)
                     if np then
                         d.napeDot.Visible = true
                         d.napeDot.Position = UDim2.fromOffset(np.X - 3, np.Y - 3)
@@ -4595,23 +5069,48 @@ function Visuals.tick()
                         d.napeDot.Visible = false
                     end
                 end
+
+                if d.arrow then d.arrow.Visible = false end
+                if d.arrowText then d.arrowText.Visible = false end
             else
-                local d = drawings[titan.model]
-                if d then hideDrawing(d) end
+                -- Fora do campo de visão: nada de caixa, mas a seta continua.
+                if d then
+                    hide2D(d)
+                    if State.flags.espArrows then
+                        showArrow(d, titan, cam, titanColor)
+                    elseif d.arrow then
+                        d.arrow.Visible = false
+                        if d.arrowText then d.arrowText.Visible = false end
+                    end
+                end
             end
-        else
-            local d = drawings[titan.model]
-            if d then hideDrawing(d) end
         end
     end
 
-    -- Recicla desenhos de Titãs que sumiram.
-    for model in pairs(drawings) do
+    -- Recicla o que saiu do mapa. Sem isso, Highlight e nameplate de Titã
+    -- destruído ficariam órfãos no modelo morto até o jogador sair.
+    eachKey(drawings, function(model)
         if not live[model] then Visuals.destroyDrawing(model) end
-    end
+    end)
+    eachKey(highlights, function(model)
+        if not live[model] then destroyHighlight(model) end
+    end)
+    eachKey(nameplates, function(model)
+        if not live[model] then destroyNameplate(model) end
+    end)
 end
 
 -- ── Ciclo de vida ────────────────────────────────────────────────────────────
+
+function Visuals.hideAll()
+    for _, d in pairs(drawings) do hideDrawing(d) end
+    for _, h in pairs(highlights) do
+        pcall(function() h.Enabled = false end)
+    end
+    for _, np in pairs(nameplates) do
+        pcall(function() np.Enabled = false end)
+    end
+end
 
 function Visuals.mount(gui)
     if not gui then
@@ -4627,8 +5126,25 @@ function Visuals.mount(gui)
     container.ZIndex = 0
     container.Parent = screen
 
-    Visuals._conn = RunService.RenderStepped:Connect(function()
-        if not State.flags.esp then return end
+    Visuals._acc = 0
+    Visuals._wasOn = false
+
+    Visuals._conn = RunService.RenderStepped:Connect(function(dt)
+        if not State.flags.esp then
+            if Visuals._wasOn then
+                Visuals.hideAll()
+                Visuals._wasOn = false
+            end
+            return
+        end
+        Visuals._wasOn = true
+
+        -- ~20 Hz. Um ESP a 60 Hz não fica mais legível e multiplica o custo
+        -- de GetBoundingBox/projeção por três.
+        Visuals._acc = (Visuals._acc or 0) + (tonumber(dt) or 0)
+        if Visuals._acc < 0.05 then return end
+        Visuals._acc = 0
+
         local ok, err = pcall(Visuals.tick)
         if not ok then warn("[VHub] ESP: " .. tostring(err)) end
     end)
@@ -4636,13 +5152,17 @@ function Visuals.mount(gui)
 end
 
 function Visuals.clear()
-    for model in pairs(drawings) do Visuals.destroyDrawing(model) end
+    eachKey(drawings, function(model) Visuals.destroyDrawing(model) end)
+    eachKey(highlights, function(model) destroyHighlight(model) end)
+    eachKey(nameplates, function(model) destroyNameplate(model) end)
+
     for _, d in ipairs(pool) do
-        for _, k in ipairs({ "box", "line", "label", "hpBg", "hpFill", "hpText", "napeDot" }) do
-            if d[k] then d[k]:Destroy() end
+        for _, k in ipairs(DRAW_KEYS) do
+            if d[k] then pcall(function() d[k]:Destroy() end) end
         end
     end
     pool = {}
+    Visuals._signature = nil
 end
 
 function Visuals.unmount()
@@ -4691,6 +5211,9 @@ local Layout = __req("core/layout")
 -- ciclo: nenhum dos dois conhece a UI (só core/game, core/state e core/util).
 local Lobby = __req("features/lobby")
 local Server = __req("features/server")
+-- Missão entra só pela leitura de estado (abates/alvo) e pelo teste de golpe.
+-- mission.lua não conhece a UI, então não há ciclo.
+local Mission = __req("features/mission")
 
 local UI = {}
 
@@ -5475,8 +5998,22 @@ local function buildMissoes()
     addToggle(titas, 5, "autoTPToTitan", "Teleportar ao Titã mais próximo")
     addSlider(titas, 6, "killRange", "Alcance do ataque", 5, 150, " studs")
     addSlider(titas, 7, "strikeDelay", "Intervalo entre golpes", 0.05, 1, "s", 2)
-    addInfo(titas, 8,
-        "O alcance real da lâmina é curto. Valores altos dependem da magnitude estendida em Config.")
+    local killInfo = Widget.info({
+        parent = titas.body,
+        text = Mission.statusLine(),
+        order = 8,
+    })
+    UI.killInfo = killInfo
+    addButton(titas, 9, "Testar golpe agora", "solid", function()
+        local ok, detail = Mission.testStrike()
+        if ok then
+            UI.notify("Teste de golpe", tostring(detail), 10)
+        else
+            UI.notify("Teste de golpe", tostring(detail), 8)
+        end
+    end)
+    addInfo(titas, 10,
+        "O alcance real da lâmina é curto. Com \"Mirar na nuca\" ligado o script chega a ~4 studs do alvo; sem ele, a magnitude precisa cobrir o alcance. USE O TESTE DE GOLPE antes de confiar no auto kill: ele mostra a vida antes/depois e qual remote respondeu.")
 
     -- ── Movimento
     local mov = Widget.section({ parent = page, text = "Movimento" })
@@ -5626,16 +6163,26 @@ local function buildVisual()
     local esp = Widget.section({ parent = page, text = "Titan ESP" })
     esp.instance.LayoutOrder = 1
     addToggle(esp, 1, "esp", "Ativar ESP", "Mostra os Titãs através das paredes")
-    addToggle(esp, 2, "espBox", "Caixa")
-    addToggle(esp, 3, "espLine", "Linha de rastreio")
-    addToggle(esp, 4, "espText", "Nome e distância")
-    addToggle(esp, 5, "espHealth", "Barra de vida")
-    addToggle(esp, 6, "espNape", "Marcar a nuca")
-    addToggle(esp, 7, "espBossOnly", "Somente chefes", "Esconde os Titãs puros")
-    addDropdown(esp, 8, "espColor", "Cor", {
+    addToggle(esp, 2, "espAnywhere", "Ver de qualquer lugar",
+        "Ignora a distância: Highlight + nome aparecem no mapa inteiro")
+    addToggle(esp, 3, "espHighlight", "Contorno 3D",
+        "Aplica Highlight no Titã, atravessando paredes e terreno")
+    addToggle(esp, 4, "espNameplate", "Nome e vida sobre o Titã",
+        "Billboard preso ao modelo, sem limite de distância")
+    addToggle(esp, 5, "espArrows", "Setas fora da tela",
+        "Aponta para Titãs atrás de você ou fora do campo de visão")
+    addToggle(esp, 6, "espBox", "Caixa")
+    addToggle(esp, 7, "espLine", "Linha de rastreio")
+    addToggle(esp, 8, "espText", "Nome e distância na tela")
+    addToggle(esp, 9, "espHealth", "Barra de vida")
+    addToggle(esp, 10, "espNape", "Marcar a nuca")
+    addToggle(esp, 11, "espBossOnly", "Somente chefes", "Esconde os Titãs puros")
+    addDropdown(esp, 12, "espColor", "Cor", {
         "Vermelho", "Branco", "Verde", "Azul", "Amarelo", "Rosa", "Ciano" })
-    addSlider(esp, 9, "espMaxDist", "Distância máxima", 100, 2000, " studs")
-    addSlider(esp, 10, "espThickness", "Espessura", 1, 4, "", 1)
+    addSlider(esp, 13, "espMaxDist", "Distância máxima (2D)", 100, 10000, " studs")
+    addSlider(esp, 14, "espThickness", "Espessura", 1, 4, "", 1)
+    addInfo(esp, 15,
+        "Com \"Ver de qualquer lugar\" ligado, a distância máxima só limita a caixa/linha 2D. O contorno 3D, o nome e as setas continuam valendo para o mapa inteiro.")
 
     pages.visual = { frame = page }
 end
@@ -5739,10 +6286,12 @@ local function buildConfig()
 
     local av = Widget.section({ parent = page, text = "Avançado" })
     av.instance.LayoutOrder = 3
-    addSlider(av, 1, "hitMagnitude", "Magnitude do acerto", 5, 250, "", 0)
+    addSlider(av, 1, "hitMagnitude", "Magnitude do acerto", 5, 10000, "", 0)
     addSlider(av, 2, "hitOffset", "Offset do acerto", 0, 100, "", 0)
-    addInfo(av, 3,
-        "A magnitude declara a distância do golpe em studs. O padrão 12 é o comprimento aproximado da lâmina. Valores acima de 150 são fisicamente impossíveis e o sinal mais fácil do servidor auditar.",
+    addDropdown(av, 3, "registerMethod", "Remote do Register",
+        { "POST", "GET", "Ambos" })
+    addInfo(av, 4,
+        "A magnitude declara a distância do golpe em studs. O padrão 60 cobre o alcance curto com folga; 143–850 são valores de scripts públicos e o sinal mais fácil do servidor auditar.\n\nPOST usa o RemoteEvent (padrão dos scripts recentes); GET usa o RemoteFunction (Tekkit/StwFate); Ambos tenta os dois. Se o auto kill não causar dano, altere só este campo e use \"Testar golpe\".",
         true)
 
     local dados = Widget.section({ parent = page, text = "Dados" })
@@ -5763,6 +6312,11 @@ local function buildConfig()
     end)
     addButton(dados, 3, "Diagnóstico do jogo", "solid", function() UI.showDiagnostic() end)
     addButton(dados, 4, "Checar marcação da conta", "danger", function() UI.checkFlag() end)
+    addButton(dados, 5, "Descarregar script", "danger", function()
+        if not UI.requestShutdown() then
+            UI.notify("VHub", "O descarregamento não foi ligado pela entrada do script.", 5)
+        end
+    end)
 
     -- ── Perfis nomeados
     local prof = Widget.section({ parent = page, text = "Perfis de Configuração" })
@@ -5930,13 +6484,18 @@ function UI.showDiagnostic()
     local lines = {
         ("Lugar: %s (%s)"):format(PLACE_NAMES[r.placeKind] or "?", tostring(r.placeId)),
         ("Universo: %s"):format(r.isAOTR and "AOTR confirmado" or "NÃO é o AOTR"),
-        ("Remotes: %s"):format(r.remotesFound and "ok" or "AUSENTES"),
+        ("Remotes: %s (GET=%s · POST=%s)"):format(
+            r.remotesFound and "ok" or "AUSENTES",
+            tostring(r.remoteGetClass or "?"), tostring(r.remotePostClass or "?")),
         ("Pasta de Titãs: %s"):format(r.hasTitanFolder and "presente" or "ausente aqui"),
         ("Titãs vivos: %s"):format(tostring(r.titanCount)),
+        ("Shifter (Attack_Titan): %s"):format(r.shifter and "sim" or "não"),
     }
     if r.sampleTitan then
         table.insert(lines, ("Exemplo: %s [%s]"):format(r.sampleTitan, r.sampleKind or "?"))
         table.insert(lines, ("Nuca: %s"):format(r.sampleNape or "não encontrada"))
+        table.insert(lines, ("Alvo do Register: %s%s"):format(
+            tostring(r.sampleTarget or "?"), r.sampleMarker and " (Marker)" or ""))
     end
     table.insert(lines, ("Nível: %s  Prestígio: %s  Refills: %s"):format(
         tostring(r.level), tostring(r.prestige), tostring(r.refills)))
@@ -6040,6 +6599,7 @@ local function refreshLoop()
             pcall(function()
                 local snap = Stats.snapshot()
                 if UI.serverInfo then UI.serverInfo:set(serverSummary()) end
+                if UI.killInfo then UI.killInfo:set(Mission.statusLine()) end
 
                 -- Cartões
                 if statCards.players then
@@ -6097,6 +6657,26 @@ end
 
 function UI.bindServer(mod)
     if mod then Server_ref = mod end
+end
+
+-- O descarregamento pertence à entrada (main), que conhece todos os módulos.
+-- A UI só guarda a função e a chama fora do callback do botão: destruir a
+-- própria interface dentro do clique derrubaria o widget que está executando.
+local shutdownHandler = nil
+
+function UI.bindShutdown(fn)
+    if type(fn) == "function" then shutdownHandler = fn end
+end
+
+function UI.requestShutdown()
+    if not shutdownHandler then return false end
+    local fn = shutdownHandler
+    UI.notify("VHub", "Descarregando script…", 2)
+    task.defer(function()
+        local ok, err = pcall(fn)
+        if not ok then warn("[VHub] falha ao descarregar: " .. tostring(err)) end
+    end)
+    return true
 end
 
 -- Tamanho do menu em tempo real. O UIScale é recriado a cada montagem, então
@@ -6267,12 +6847,27 @@ if not Game_.isAOTR() then
         :format(tostring(game.GameId), tostring(Game_.UNIVERSE_ID)))
 end
 
+-- ── Reexecução ───────────────────────────────────────────────────────────────
+-- Rodar o loadstring duas vezes sem descarregar deixava dois laços, dois ESPs e
+-- dois ouvintes da tecla do menu vivos. Se já existe um Hub nesta sessão,
+-- desliga o anterior antes de montar o novo.
+local genv = nil
+if Util.getGenv then
+    local ok, g = pcall(Util.getGenv)
+    if ok then genv = g end
+end
+
+if genv and genv.VHub and genv.VHub.__vhub then
+    pcall(function() genv.VHub.shutdown() end)
+end
+
 -- ── Hub ──────────────────────────────────────────────────────────────────────
 
 local Hub = {}
 Hub.version = "2.0.0"
 Hub.placeId = game.PlaceId
 Hub.placeKind = kind
+Hub.__vhub = true
 
 Interface.VERSION = Hub.version
 Interface.bindLobby(Lobby)
@@ -6290,6 +6885,24 @@ Interface.onRemount(function(screenGui)
     Visuals.unmount()
     Visuals.mount(screenGui)
 end)
+
+-- ── Encerramento limpo ───────────────────────────────────────────────────────
+-- Definido antes do mount porque o botão "Descarregar script" precisa dele.
+-- Cada parada vai em pcall: uma feature quebrada não pode impedir as outras de
+-- soltar conexões e sair da memória.
+local function shutdown()
+    pcall(function() Mission.stopAttack() end)
+    pcall(function() Mission.stop() end)
+    pcall(function() Lobby.stop() end)
+    pcall(function() Post.stop() end)
+    pcall(function() Utility.stop() end)
+    pcall(function() Visuals.unmount() end)
+    pcall(function() Interface.unmount() end)
+    pcall(function() State.save() end)
+    if genv and genv.VHub == Hub then genv.VHub = nil end
+end
+Hub.shutdown = shutdown
+Interface.bindShutdown(shutdown)
 
 Interface.mount()
 
@@ -6339,19 +6952,6 @@ Mission.start()
 Lobby.start()
 Post.start()
 Utility.start()
-
--- ── Encerramento limpo ───────────────────────────────────────────────────────
-
-local function shutdown()
-    pcall(function() Mission.stop() end)
-    pcall(function() Lobby.stop() end)
-    pcall(function() Post.stop() end)
-    pcall(function() Utility.stop() end)
-    pcall(function() Visuals.unmount() end)
-    pcall(function() Interface.unmount() end)
-    State.save()
-end
-Hub.shutdown = shutdown
 
 -- ── Boas-vindas ──────────────────────────────────────────────────────────────
 
