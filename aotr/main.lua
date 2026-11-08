@@ -1884,6 +1884,26 @@ function Widget.label(props)
     })
 end
 
+-- ── Conexões de serviço ──────────────────────────────────────────────────────
+-- Slider e dropdown escutam UserInputService para arrastar e fechar ao clicar
+-- fora. Essas conexões NÃO morrem junto com o Frame: sem registro, cada
+-- remontagem (mudança de tema) deixaria um ouvinte antigo vivo para sempre.
+-- A UI chama Widget.releaseConnections() no unmount.
+
+local serviceConnections = {}
+
+local function trackService(conn)
+    if conn then table.insert(serviceConnections, conn) end
+    return conn
+end
+
+function Widget.releaseConnections()
+    for _, conn in ipairs(serviceConnections) do
+        pcall(function() conn:Disconnect() end)
+    end
+    serviceConnections = {}
+end
+
 -- ── Botão ────────────────────────────────────────────────────────────────────
 
 function Widget.button(props)
@@ -2201,12 +2221,12 @@ function Widget.slider(props)
             dragging = false
         end
     end)
-    game:GetService("UserInputService").InputChanged:Connect(function(input)
+    trackService(game:GetService("UserInputService").InputChanged:Connect(function(input)
         if dragging and (input.UserInputType == Enum.UserInputType.MouseMovement
             or input.UserInputType == Enum.UserInputType.Touch) then
             apply(fromX(input.Position.X), true)
         end
-    end)
+    end))
 
     return {
         instance = wrap,
@@ -2354,7 +2374,7 @@ function Widget.dropdown(props)
         end
     end)
 
-    game:GetService("UserInputService").InputBegan:Connect(function(input)
+    trackService(game:GetService("UserInputService").InputBegan:Connect(function(input)
         if open and input.UserInputType == Enum.UserInputType.MouseButton1 then
             local mp = input.Position
             local ap, sz = wrap.AbsolutePosition, wrap.AbsoluteSize
@@ -2368,7 +2388,7 @@ function Widget.dropdown(props)
                 hstroke.Color = Theme.color.line
             end
         end
-    end)
+    end))
 
     return {
         instance = wrap,
@@ -6165,6 +6185,10 @@ function UI.unmount()
         pcall(function() conn:Disconnect() end)
     end
     connections = {}
+
+    -- Sliders e dropdowns escutam UserInputService por conta própria; sem isso
+    -- cada remontagem deixaria um ouvinte antigo vivo.
+    Widget.releaseConnections()
 
     if gui then gui:Destroy(); gui = nil end
 
