@@ -1201,10 +1201,10 @@ end
 local fps = 60
 local frameCount = 0
 local windowStart = os.clock()
+local fpsConn = nil
 
 task.spawn(function()
-    local conn
-    conn = RunService.RenderStepped:Connect(function()
+    fpsConn = RunService.RenderStepped:Connect(function()
         frameCount = frameCount + 1
         local elapsed = os.clock() - windowStart
         if elapsed >= 0.5 then
@@ -1212,9 +1212,14 @@ task.spawn(function()
             frameCount = 0
             windowStart = os.clock()
         end
-        -- A conexão fica viva enquanto o script rodar; nada a desconectar.
     end)
 end)
+
+-- Sem isso, cada reexecução do script deixava um RenderStepped contando
+-- frames para sempre. O descarregamento precisa soltar esta conexão.
+function Stats.stop()
+    if fpsConn then fpsConn:Disconnect(); fpsConn = nil end
+end
 
 function Stats.fps()
     return fps
@@ -6479,10 +6484,14 @@ function UI.notify(title, text, duration)
 
     table.insert(toasts, card)
     task.delay(duration, function()
+        -- A interface pode ter sido remontada/descarregada durante a vida do
+        -- toast; o card já foi destruído junto com o ScreenGui antigo. Criar um
+        -- tween num Instance destruído lança erro fora de qualquer pcall.
+        if not card.Parent then return end
         Widget.tween(card, Theme.ease.fast, { Position = UDim2.new(1, 24, 1, 0) })
         task.wait(0.15)
         for i, c in ipairs(toasts) do if c == card then table.remove(toasts, i) break end end
-        card:Destroy()
+        if card.Parent then card:Destroy() end
     end)
 end
 
@@ -6914,6 +6923,7 @@ local function shutdown()
     pcall(function() Lobby.stop() end)
     pcall(function() Post.stop() end)
     pcall(function() Utility.stop() end)
+    pcall(function() Stats.stop() end)
     pcall(function() Visuals.unmount() end)
     pcall(function() Interface.unmount() end)
     pcall(function() State.save() end)
