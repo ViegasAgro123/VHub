@@ -4605,6 +4605,7 @@ local function buildDrawing()
 
     if State.flags.espBox then
         d.box = Util.tag(Instance.new("Frame"))
+        d.box.Name = "VHub_ESP_Box"
         d.box.BackgroundTransparency = 1
         d.box.BorderSizePixel = 0
         d.box.ZIndex = 2
@@ -4618,6 +4619,7 @@ local function buildDrawing()
     if State.flags.espLine then
         -- linha da base da tela até o Titã: um Frame fino rotacionado.
         d.line = Util.tag(Instance.new("Frame"))
+        d.line.Name = "VHub_ESP_Line"
         d.line.AnchorPoint = Vector2.new(0, 0.5)
         d.line.BorderSizePixel = 0
         d.line.BackgroundColor3 = State.espColor()
@@ -4626,6 +4628,7 @@ local function buildDrawing()
 
     if State.flags.espText then
         d.label = Util.tag(Instance.new("TextLabel"))
+        d.label.Name = "VHub_ESP_Label"
         d.label.BackgroundTransparency = 1
         d.label.Font = Theme.font.bold
         d.label.TextSize = 11
@@ -4638,16 +4641,19 @@ local function buildDrawing()
 
     if State.flags.espHealth then
         d.hpBg = Util.tag(Instance.new("Frame"))
+        d.hpBg.Name = "VHub_ESP_HPBg"
         d.hpBg.BorderSizePixel = 0
         d.hpBg.BackgroundColor3 = Color3.fromRGB(20, 20, 24)
         d.hpBg.ZIndex = 3
 
         d.hpFill = Util.tag(Instance.new("Frame"))
+        d.hpFill.Name = "VHub_ESP_HPFill"
         d.hpFill.BorderSizePixel = 0
         d.hpFill.BackgroundColor3 = Theme.color.ok
         d.hpFill.ZIndex = 4
 
         d.hpText = Util.tag(Instance.new("TextLabel"))
+        d.hpText.Name = "VHub_ESP_HPText"
         d.hpText.BackgroundTransparency = 1
         d.hpText.Font = Theme.font.mono
         d.hpText.TextSize = 9
@@ -4659,6 +4665,7 @@ local function buildDrawing()
     if State.flags.espNape then
         -- marcador da nuca: o alvo exato, em cor de destaque
         d.napeDot = Util.tag(Instance.new("Frame"))
+        d.napeDot.Name = "VHub_ESP_Nape"
         d.napeDot.BorderSizePixel = 0
         d.napeDot.BackgroundColor3 = Theme.color.accent
         d.napeDot.ZIndex = 6
@@ -4675,6 +4682,7 @@ local function buildDrawing()
     if State.flags.espArrows then
         -- seta de borda: aponta para Titã fora da tela ou atrás da câmera.
         d.arrow = Util.tag(Instance.new("TextLabel"))
+        d.arrow.Name = "VHub_ESP_Arrow"
         d.arrow.BackgroundTransparency = 1
         d.arrow.BorderSizePixel = 0
         d.arrow.Font = Theme.font.bold
@@ -4746,6 +4754,15 @@ function Visuals.destroyDrawing(model)
     hideDrawing(d)
     table.insert(pool, d)
     drawings[model] = nil
+end
+
+-- Destrói de vez um desenho do pool. Diferente de Visuals.destroyDrawing, que
+-- só esconde e devolve ao pool para reuso.
+local function killDrawing(d)
+    if not d then return end
+    for _, k in ipairs(DRAW_KEYS) do
+        if d[k] then pcall(function() d[k]:Destroy() end) end
+    end
 end
 
 -- ── Highlight / nameplate ────────────────────────────────────────────────────
@@ -4935,6 +4952,11 @@ function Visuals.tick()
     if signature ~= Visuals._signature then
         Visuals._signature = signature
         eachKey(drawings, function(model) Visuals.destroyDrawing(model) end)
+        -- O pool guarda desenhos montados com a assinatura ANTIGA. Devolvê-los
+        -- a um Titã já rastreado faria o elemento recém-ligado nunca aparecer
+        -- (o desenho não tem a instância que a flag nova pede).
+        for _, d in ipairs(pool) do killDrawing(d) end
+        pool = {}
     end
 
     local viewport = cam.ViewportSize or Vector2.new(1920, 1080)
@@ -5156,11 +5178,7 @@ function Visuals.clear()
     eachKey(highlights, function(model) destroyHighlight(model) end)
     eachKey(nameplates, function(model) destroyNameplate(model) end)
 
-    for _, d in ipairs(pool) do
-        for _, k in ipairs(DRAW_KEYS) do
-            if d[k] then pcall(function() d[k]:Destroy() end) end
-        end
-    end
+    for _, d in ipairs(pool) do killDrawing(d) end
     pool = {}
     Visuals._signature = nil
 end
